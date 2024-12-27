@@ -1,0 +1,19 @@
+parquet_path : '/projects/cpjump1/jump/load_data/ctrls_images.parquet'
+output_folder : './tmp/'
+
+gpu_id: 0
+num_workers : '5'
+batch_size : '32'
+
+metadata_cols : [
+ 'Metadata_Source',
+ 'Metadata_Batch',
+ 'Metadata_Plate',
+ 'Metadata_Well',
+ 'Metadata_Site']
+images_cols : [
+ 'FileName_OrigAGP',
+ 'FileName_OrigDNA',
+ 'FileName_OrigER',
+ 'FileName_OrigMito', 
+ 'FileName_OrigRNA']
