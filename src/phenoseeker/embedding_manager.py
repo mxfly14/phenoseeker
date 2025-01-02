@@ -16,32 +16,36 @@ import warnings
 from tqdm_joblib import tqdm_joblib
 
 from .transform import Spherize
-from .utils import (
-    save_filtered_df_with_components,
-    process_group_field2well,
-    convert_row_to_number,
-    test_distributions,
+from .plotting import (
     plot_distrib_mix_max,
     plot_lisi_scores,
     plot_heatmaps,
     plot_maps,
+)
+from .compute import (
     compute_reduce_center,
     calculate_statistics,
     calculate_lisi_score,
     calculate_maps,
+)
+from .norm_functions import (
     apply_Z_score_plate,
     apply_robust_Z_score_plate,
     apply_int_subset,
     apply_spherize_subset,
     rescale,
 )
+from .utils import (
+    save_filtered_df_with_components,
+    process_group_field2well,
+    convert_row_to_number,
+    test_distributions,
+)
 
-METADATA_PREFIX = "Metadata_"
-EMBEDDING_PREFIX = "Embedding_"
+METADATA_PREFIX = "Metadata_"  # TODO: should we keep this ?
+EMBEDDING_PREFIX = "Embeddings_"
 
 warnings.filterwarnings("ignore")
-
-# TODO: automatiquely do convert_row_col_to_number if needed
 
 
 class EmbeddingManager:
@@ -91,17 +95,19 @@ class EmbeddingManager:
             "Dest210823-174422",
         ]
         self.embedding_columns = {
-            col for col in self.df.columns if EMBEDDING_PREFIX in col
+            col
+            for col in self.df.columns
+            if EMBEDDING_PREFIX in col  # TODO: this should be a method
         }
         self.distance_matrices = {}
         self.find_dmso_controls()
 
-        # TODO: find if necessary or implement and call self.split_well_into_row_col
         if self.entity == "well":
             self.df[["Metadata_Row", "Metadata_Col"]] = self.df["Metadata_Well"].apply(
                 lambda x: pd.Series(self._well_to_row_col(x))
             )
-        #    self.convert_row_col_to_number()
+
+        self.convert_row_col_to_number()
 
     def __len__(self) -> int:
         return len(self.df)
@@ -136,7 +142,7 @@ class EmbeddingManager:
                 print(f"Path does not exist: {path}")
                 return None
             try:
-                tensor = torch.load(path)
+                tensor = torch.load(path, weights_only=True)
                 return tensor.numpy()
             except Exception as e:
                 print(f"Error loading {path}: {e}")
@@ -686,7 +692,7 @@ class EmbeddingManager:
         distance: str | None = "cosine",
         n_jobs: int | None = -1,
         weighted: bool | None = False,
-        random_maps: bool | None = True,
+        random_maps: bool | None = False,
         plot: bool | None = True,
     ) -> pd.DataFrame:
         """
@@ -694,14 +700,15 @@ class EmbeddingManager:
         column for multiple embedding columns.
 
         :param vectors_columns: Dictionary with embedding names as keys and column
-         names as values.
+        names as values.
         :param labels_column: Column name containing the labels.
         :param distance: Distance metric to use (default is 'cosine').
         :param n_jobs: Number of jobs for parallel processing.
         :param weighted: Boolean indicating whether to weight the mAP by label
-         frequency.
+        frequency.
+        :param random_maps: Boolean indicating whether to compute random mAP values.
         :return: DataFrame with mAP and random mAP for each label and the overall mean
-         mAP.
+        mAP.
         """
 
         if vectors_columns is None:
@@ -737,7 +744,9 @@ class EmbeddingManager:
                     self.distance_matrices.clear()
 
                 def compute_maps_label(query_label):
-                    return calculate_maps(dist_matrix, query_label, np.array(labels))
+                    return calculate_maps(
+                        dist_matrix, query_label, np.array(labels), random_maps
+                    )
 
                 label_map_results = Parallel(n_jobs=n_jobs)(
                     delayed(compute_maps_label)(query_label)
@@ -762,12 +771,14 @@ class EmbeddingManager:
                         }
 
                     combined_results[query_label][f"mAP ({emb_name})"] = mean_ap
-                    combined_results[query_label][
-                        f"Random mAP ({emb_name})"
-                    ] = mean_random_ap
+                    if random_maps:
+                        combined_results[query_label][
+                            f"Random mAP ({emb_name})"
+                        ] = mean_random_ap
             except ValueError as e:
                 print(f"Erreur computing map for {emb_name}: {str(e)}")
                 continue
+
         final_results = pd.DataFrame.from_dict(combined_results, orient="index")
 
         numeric_cols = final_results.select_dtypes(include=[np.number]).columns
@@ -1176,7 +1187,7 @@ class EmbeddingManager:
         method: str | None = "ZCA",
         norm_embeddings: bool | None = True,
         use_control: bool | None = True,
-        n_jobs: int | None = -1,
+        n_jobs: int | None = 1,  # TODO understand why it works better this way...
     ) -> None:
         """
         Applies a sphering (whitening) transformation to embeddings in the DataFrame

@@ -5,6 +5,9 @@ description = ""
 authors = ["Maxime Sanchez <maxime.sanchez14@gmail.com>"]
 license = "Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)"
 readme = "README.md"
+packages = [
+    { include = "phenoseeker", from = "src" }
+]
 
 [tool.poetry.dependencies]
 python = "3.10.10"
@@ -25,6 +28,7 @@ seaborn = "^0.13.2"
 scikit-learn = "^1.6.0"
 umap = "^0.1.1"
 rdkit = "^2024.9.1"
+tqdm-joblib = "^0.0.4"
 
 
 [build-system]
