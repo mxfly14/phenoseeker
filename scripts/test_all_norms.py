@@ -94,11 +94,12 @@ def main():
         if selected_plates == "all":
             selected_plates = well_em.df["Metadata_Plate"].unique()
 
-        selected_plates = [
-            item for item in selected_plates if item not in well_em.no_dmso_plates
-        ]
+        # selected_plates = [
+        #    item for item in selected_plates if item not in well_em.no_dmso_plates
+        # ]
 
         well_em.df = well_em.df[well_em.df["Metadata_Plate"].isin(selected_plates)]
+
         well_em.df = well_em.df[
             well_em.df["Metadata_JCP2022"].isin(well_em.JCP_ID_controls)
         ]
