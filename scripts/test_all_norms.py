@@ -40,10 +40,10 @@ def evaluate_pipeline(sequence, well_em, results_dfs, current, total) -> dict:
             labels_column="Metadata_Batch",
             vectors_columns={f'{sequence["name"]}': col_name},
         )
-        maps_source = well_em.compute_maps(
-            labels_column="Metadata_Source",
-            vectors_columns={f'{sequence["name"]}': col_name},
-        )
+        # maps_source = well_em.compute_maps(
+        #    labels_column="Metadata_Source",
+        #    vectors_columns={f'{sequence["name"]}': col_name},
+        # )
         # maps_plate = well_em.compute_maps(
         #    labels_column="Metadata_Plate",
         #    vectors_columns={f'{sequence["name"]}': col_name},
@@ -51,7 +51,7 @@ def evaluate_pipeline(sequence, well_em, results_dfs, current, total) -> dict:
 
         results_dfs["jcp2022"].append(maps_jcp2022)
         results_dfs["batch"].append(maps_batch)
-        results_dfs["source"].append(maps_source)
+        # results_dfs["source"].append(maps_source)
         # results_dfs["plate"].append(maps_plate)
 
         logging.info(f"Pipeline '{sequence['name']}' evaluated successfully.")
@@ -131,7 +131,7 @@ def main():
         results_dfs = {
             "jcp2022": [],
             "batch": [],
-            "source": [],
+            #    "source": [],
             #     "plate": [],
         }
 
