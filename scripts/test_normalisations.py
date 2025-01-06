@@ -93,7 +93,7 @@ def evaluate_pipeline(sequence, well_em, results_dfs, current, total) -> dict:
     logging.info(f"Evaluating pipeline {current}/{total}: {sequence['name']}")
     try:
         col_name = apply_transformations(well_em, sequence)
-        compounds_em = well_em.filter_and_instantiate(Metadata_Is_Control=False)
+        compounds_em = well_em.filter_and_instantiate(Metadata_Is_dmso=False)
         maps_jcp2022 = compounds_em.compute_maps(
             labels_column="Metadata_JCP2022",
             vectors_columns={f'{sequence["name"]}': col_name},

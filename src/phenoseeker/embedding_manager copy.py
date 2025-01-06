@@ -1,7 +1,9 @@
 import random
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
+import torch
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
@@ -27,11 +29,14 @@ from .compute import (
     calculate_maps,
 )
 from .norm_functions import (
+    apply_Z_score_plate,
+    apply_robust_Z_score_plate,
     apply_int_subset,
     apply_spherize_subset,
     rescale,
 )
 from .utils import (
+    save_filtered_df_with_components,
     process_group_field2well,
     convert_row_to_number,
     test_distributions,
@@ -45,7 +50,7 @@ warnings.filterwarnings("ignore")
 
 class EmbeddingManager:
     """
-    Class to aggregate, normalize, and visualize embeddings.
+    Class that has a lot of methods to aggregate, normalise or visualize embeddings
     """
 
     def __init__(
@@ -67,19 +72,38 @@ class EmbeddingManager:
             self.df = df
         else:
             raise TypeError(
-                "df should be either a pandas DataFrame or a Path to a CSV/Parquet file."  # Noqa
+                "df should be either a pandas DataFrame or a Path to a CSV/Parquet file."  # noqa
             )
 
-        #    self.df = self.df.sample(frac=1, ignore_index=True)
-        #    Shuffle the DataFrame TODO: remove it
-        self.entity = entity
+        self.df = self.df.sample(frac=1, ignore_index=True)
 
-        # Initialize storage for embeddings as a dictionary
-        self.embeddings = {}
+        self.entity = entity
+        self.JCP_ID_poscon = [
+            "JCP2022_085227",
+            "JCP2022_037716",
+            "JCP2022_025848",
+            "JCP2022_046054",
+            "JCP2022_035095",
+            "JCP2022_064022",
+            "JCP2022_050797",
+            "JCP2022_012818",
+        ]
+        self.JCP_ID_controls = self.JCP_ID_poscon + ["JCP2022_033924"]
+        self.no_dmso_plates = [
+            "Dest210823-174240",
+            "Dest210628-162003",
+            "Dest210823-174422",
+        ]
+        self.embedding_columns = {
+            col
+            for col in self.df.columns
+            if EMBEDDING_PREFIX in col  # TODO: this should be a method
+        }
         self.distance_matrices = {}
+        self.find_dmso_controls()
 
         if self.entity == "well":
-            self.df["Metadata_Row", "Metadata_Col"] = self.df["Metadata_Well"].apply(
+            self.df[["Metadata_Row", "Metadata_Col"]] = self.df["Metadata_Well"].apply(
                 lambda x: pd.Series(self._well_to_row_col(x))
             )
 
@@ -106,89 +130,48 @@ class EmbeddingManager:
 
     def load(
         self,
-        embedding_name: str,
-        file_path: str | Path,
+        path_column: str,
+        n_cpus: int | None = -1,
+        vectors_column: str | None = "Embeddings_mean",
     ) -> None:
-        """
-        Load embeddings from a .npy file and store them in the embeddings dictionary.
 
-        Args:
-            embedding_name (str): A key to identify the loaded embeddings.
-            file_path (str | Path): Path to the .npy file containing the embeddings.
-        """
-        file_path = Path(file_path)
-        if not file_path.exists() or not file_path.suffix == ".npy":
-            raise ValueError("Provided path is not a valid .npy file.")
+        paths = self.df[path_column]
 
-        embeddings = np.load(file_path)
+        def load_and_convert(path):
+            if not Path(path).exists():
+                print(f"Path does not exist: {path}")
+                return None
+            try:
+                tensor = torch.load(path, weights_only=True)
+                return tensor.numpy()
+            except Exception as e:
+                print(f"Error loading {path}: {e}")
+                return None
 
-        if embeddings.shape[0] != len(self.df):
-            raise ValueError(
-                f"Number of embeddings ({embeddings.shape[0]}) does not match number of metadata rows ({len(self.df)})."  # noqa
-            )
+        results = Parallel(n_jobs=n_cpus)(
+            delayed(load_and_convert)(path)
+            for path in tqdm(paths, desc="Loading embeddings")
+        )
 
-        self.embeddings[embedding_name] = embeddings
-
-    def get_embeddings(self, embedding_name: str) -> np.ndarray:
-        """
-        Retrieve embeddings by their name.
-
-        Args:
-            embedding_name (str): The key corresponding to the desired embeddings.
-
-        Returns:
-            np.ndarray: The requested embeddings.
-        """
-        if embedding_name not in self.embeddings:
-            raise KeyError(f"Embeddings with name '{embedding_name}' not found.")
-
-        return self.embeddings[embedding_name]
-
-    def convert_row_col_to_number(self) -> None:
-        """
-        Convert the Excel-style row and column labels to row and column numbers,
-        and add the results to the DataFrame as new columns.
-        """
-        if "Metadata_Row_Number" not in self.df.columns:
-            if not pd.api.types.is_integer_dtype(self.df["Metadata_Row"]):
-                self.df["Metadata_Row_Number"] = self.df["Metadata_Row"].apply(
-                    convert_row_to_number
-                )
-            else:
-                self.df["Metadata_Row_Number"] = self.df["Metadata_Row"]
-
-        if "Metadata_Col_Number" not in self.df.columns:
-            self.df["Metadata_Col_Number"] = self.df["Metadata_Col"].apply(int)
+        self.df[vectors_column] = results
 
     def compute_features_stats(
         self,
-        embedding_name: str,
+        vectors_column: str = "Embeddings_mean",
         plot: bool = False,
         n_jobs: int = -1,
     ) -> pd.DataFrame:
-        """
-        Compute statistical features for the specified embedding.
+        if vectors_column not in self.df.columns:
+            raise ValueError(f"Column {vectors_column} not found in the DataFrame.")
 
-        Args:
-            embedding_name (str): Name of the embedding to compute statistics for.
-            plot (bool, optional): Whether to generate a plot. Defaults to False.
-            n_jobs (int, optional): Number of parallel jobs. Defaults to -1.
+        def calculate_and_format_stats(df_subset, plate_label):
+            embeddings = np.stack(df_subset[vectors_column])
 
-        Returns:
-            pd.DataFrame: DataFrame containing the computed statistics.
-        """
-        if embedding_name not in self.embeddings:
-            raise ValueError(f"Embedding '{embedding_name}' not found.")
+            embeddings_control = np.stack(
+                df_subset[df_subset["Metadata_Is_dmso"]][vectors_column]
+            )
 
-        embeddings = self.embeddings[embedding_name]
-
-        def calculate_and_format_stats(subset_indices, plate_label):
-            subset_embeddings = embeddings[subset_indices]
-            control_indices = self.df.loc[subset_indices, "Metadata_Is_dmso"].values
-
-            embeddings_control = subset_embeddings[control_indices]
-
-            stats = calculate_statistics(subset_embeddings)
+            stats = calculate_statistics(embeddings)
             stats_control = calculate_statistics(embeddings_control)
             stats_all = {**stats, **{k + "_dmso": v for k, v in stats_control.items()}}
 
@@ -199,14 +182,12 @@ class EmbeddingManager:
 
             return stats_df
 
-        # Compute global statistics
-        global_stats_df = calculate_and_format_stats(range(len(self.df)), "all")
+        global_stats_df = calculate_and_format_stats(self.df, "all")
 
-        # Compute per-plate statistics
         plates = self.df["Metadata_Plate"].unique()
         plate_stats_dfs = Parallel(n_jobs=n_jobs)(
             delayed(calculate_and_format_stats)(
-                self.df[self.df["Metadata_Plate"] == plate].index, plate
+                self.df[self.df["Metadata_Plate"] == plate], plate
             )
             for plate in tqdm(plates, desc="Calculating statistics for each plate")
         )
@@ -216,58 +197,49 @@ class EmbeddingManager:
         self.stats_df = all_stats_df
 
         if plot:
-            plot_distrib_mix_max(global_stats_df, embeddings)
+            plot_distrib_mix_max(
+                global_stats_df,
+                np.stack(self.df[vectors_column]),
+            )
 
         return all_stats_df
 
     def plot_features_distributions(
         self,
-        embedding_name: str,
+        vectors_column: str = "Embeddings_mean",
         filter_dict: dict | None = None,
         feature_indices: list | None = None,
         bins: int | None = 10,
         log_scale: bool | None = False,
         hue_column: str | None = None,
     ) -> None:
-        """
-        Plot feature distributions for the specified embedding.
-
-        Args:
-            embedding_name (str): Name of the embedding to plot distributions for.
-            filter_dict (dict, optional): Filters to apply to the DataFrame. Defaults
-                to None.
-            feature_indices (list, optional): Indices of features to plot. Defaults to
-                None.
-            bins (int, optional): Number of bins for the histogram. Defaults to 10.
-            log_scale (bool, optional): Whether to use a logarithmic scale.
-                Defaults to False.
-            hue_column (str, optional): Column to use for coloring the histogram.
-                Defaults to None.
-        """
-        if embedding_name not in self.embeddings:
-            raise ValueError(f"Embedding '{embedding_name}' not found.")
-
-        embeddings = self.embeddings[embedding_name]
+        if vectors_column not in self.df.columns:
+            raise ValueError(f"Column {vectors_column} not found in the DataFrame.")
 
         if filter_dict:
-            filtered_df = self.df.copy()
-            for key, values in filter_dict.items():
-                if key not in filtered_df.columns:
-                    raise ValueError(f"Column '{key}' not found in the DataFrame.")
+            for key in filter_dict.keys():
+                if key not in self.df.columns:
+                    raise ValueError(f"Column {key} not found in the DataFrame.")
+            filter_mask = pd.Series([True] * len(self.df))
+
+            for col, values in filter_dict.items():
                 if isinstance(values, str):
                     values = [values]
-                filtered_df = filtered_df[filtered_df[key].isin(values)]
+                df_ = self.df[col].isin(values)
+                filter_mask = filter_mask & df_
 
-            filtered_indices = filtered_df.index
-            embeddings = embeddings[filtered_indices]
+            filtered_df = self.df.loc[filter_mask].reset_index(drop=True).copy()
+            embeddings = np.stack(filtered_df[vectors_column])
+
         else:
             filtered_df = self.df.copy()
+            embeddings = np.stack(filtered_df[vectors_column])
 
         num_features = embeddings.shape[1]
 
         if feature_indices is None:
-            feature_indices = [random.randint(0, num_features - 1)]
             n = 1
+            feature_indices = [random.randint(0, num_features - 1)]
         else:
             n = len(feature_indices)
 
@@ -279,7 +251,7 @@ class EmbeddingManager:
             data = pd.DataFrame({"value": embeddings[:, feature_idx]})
 
             if hue_column and hue_column in filtered_df.columns:
-                data[hue_column] = filtered_df.loc[filtered_df.index, hue_column].values
+                data[hue_column] = filtered_df[hue_column].values
                 sns.histplot(
                     data=data,
                     x="value",
@@ -305,106 +277,90 @@ class EmbeddingManager:
 
     def remove_features(
         self,
-        embedding_name: str,
         threshold: float = 0.0,
         metrics: str | None = "std",
-        dmso_only: bool = True,
-        by_plate: bool = True,
+        vectors_column: str | None = "Embeddings_mean",
+        dmso_only: bool | None = True,
+        by_plate: bool | None = True,
     ) -> None:
-        """
-        Remove features from the specified embedding based on a threshold.
+        if vectors_column not in self.df.columns:
+            raise ValueError(
+                f"Column {vectors_column} does not exist in the DataFrame."
+            )
+        if by_plate:
+            plates = self.df["Metadata_Plate"].unique()
+        else:
+            plates = ["all_data"]  # TODO implement the rest of the function for this
 
-        Args:
-            embedding_name (str): Name of the embedding to process.
-            threshold (float, optional): Threshold for feature removal. Defaults to 0.0.
-            metrics (str, optional): Metric to compute for feature evaluation ('std',
-                'iqrs', 'mad'). Defaults to 'std'.
-            dmso_only (bool, optional): Whether to consider only DMSO controls. Defaults
-                to True.
-            by_plate (bool, optional): Whether to process by plate. Defaults to True.
-        """
-        if embedding_name not in self.embeddings:
-            raise ValueError(f"Embedding '{embedding_name}' not found.")
-
-        embeddings = self.embeddings[embedding_name]
-        plates = self.df["Metadata_Plate"].unique() if by_plate else ["all_data"]
-
-        remove_mask = np.zeros(embeddings.shape[1], dtype=bool)
+        remove_mask = np.zeros(self.df[vectors_column].iloc[0].shape[0], dtype=bool)
 
         for plate in tqdm(plates, desc="Processing plates"):
-            if plate == "all_data":
-                plate_indices = self.df.index
-            else:
-                plate_indices = self.df[self.df["Metadata_Plate"] == plate].index
-
-            subset_embeddings = embeddings[plate_indices]
-
             if dmso_only:
-                control_indices = self.df.loc[plate_indices, "Metadata_Is_dmso"]
-                subset_embeddings = subset_embeddings[control_indices]
+                embeddings_plate = np.stack(
+                    list(
+                        self.df[
+                            (self.df["Metadata_Plate"] == plate)
+                            & (self.df["Metadata_Is_dmso"])
+                        ][vectors_column]
+                    )
+                )
+            else:
+                embeddings_plate = np.stack(
+                    list(self.df[self.df["Metadata_Plate"] == plate][vectors_column])
+                )
 
             if metrics == "std":
-                feature_metric = subset_embeddings.std(axis=0)
-            elif metrics == "iqrs":
+                feature_metric = embeddings_plate.std(axis=0)
+            if metrics == "iqrs":
                 feature_metric = np.subtract(
-                    *np.percentile(subset_embeddings, [75, 25], axis=0)
+                    *np.percentile(embeddings_plate, [75, 25], axis=0)
                 )
-            elif metrics == "mad":
-                median = np.median(subset_embeddings, axis=0)
-                feature_metric = np.median(np.abs(subset_embeddings - median), axis=0)
-            else:
-                raise ValueError(
-                    "Unsupported metric. Choose from 'std', 'iqrs', or 'mad'."
-                )
-
+            if metrics == "mad":
+                median = np.median(embeddings_plate, axis=0).astype(np.float32)
+                feature_metric = np.median(
+                    np.abs(embeddings_plate - median), axis=0
+                ).astype(np.float32)
             remove_mask |= feature_metric <= threshold
 
-        self.embeddings[embedding_name] = embeddings[:, ~remove_mask]
+        filtered_embeddings = np.stack(
+            [emb[~remove_mask] for emb in self.df[vectors_column]]
+        )
+
+        self.df[vectors_column] = list(filtered_embeddings)
         num_features_removed = remove_mask.sum()
         print(f"Number of features removed: {num_features_removed}")
 
     def plot_dimensionality_reduction(
         self,
-        embedding_name: str,
-        reduction_method: str = "PCA",
+        vectors_column: str | None = "Embeddings_mean",
+        reduction_method: str | None = "PCA",
         color_by: str | None = None,
         filter_dict: dict | None = None,
-        n_components: int = 2,
-        random_state: int = 42,
+        n_components: int | None = 2,
+        random_state: int | None = 42,
         save_path: Path | None = None,
     ) -> None:
-        """
-        Plot dimensionality reduction for the specified embedding.
-
-        Args:
-            embedding_name (str): Name of the embedding to reduce and plot.
-            reduction_method (str, optional): Dimensionality reduction method ('PCA',
-                't-SNE', 'UMAP'). Defaults to 'PCA'.
-            color_by (str, optional): Column to use for coloring the plot. Defaults None
-            filter_dict (dict, optional): Filters to apply to the df. Defaults to None.
-            n_components (int, optional): Number of components for reduction. Defaults 2
-            random_state (int, optional): Random state for reproducibility. Defaults 42.
-            save_path (Path, optional): Path to save the reduced components.
-                Defaults to None.
-        """
-        if embedding_name not in self.embeddings:
-            raise ValueError(f"Embedding '{embedding_name}' not found.")
-
-        embeddings = self.embeddings[embedding_name]
+        if vectors_column not in self.df.columns:
+            raise ValueError(f"Column {vectors_column} not found in the DataFrame.")
 
         if filter_dict:
-            filtered_df = self.df.copy()
-            for key, values in filter_dict.items():
-                if key not in filtered_df.columns:
-                    raise ValueError(f"Column '{key}' not found in the DataFrame.")
+            for key in filter_dict.keys():
+                if key not in self.df.columns:
+                    raise ValueError(f"Column {key} not found in the DataFrame.")
+            filter_mask = pd.Series([True] * len(self.df))
+
+            for col, values in filter_dict.items():
                 if isinstance(values, str):
                     values = [values]
-                filtered_df = filtered_df[filtered_df[key].isin(values)]
+                df_ = self.df[col].isin(values)
+                filter_mask = filter_mask & df_
 
-            filtered_indices = filtered_df.index
-            embeddings = embeddings[filtered_indices]
+            filtered_df = self.df.loc[filter_mask].reset_index(drop=True).copy()
+            embeddings = np.stack(filtered_df[vectors_column])
+
         else:
             filtered_df = self.df.copy()
+            embeddings = np.stack(filtered_df[vectors_column])
 
         if reduction_method == "PCA":
             reducer = PCA(n_components=n_components, random_state=random_state)
@@ -436,11 +392,16 @@ class EmbeddingManager:
             y_label = "Component 2"
         else:
             raise ValueError(
-                f"Reduction method '{reduction_method}' not recognized. Choose from 'PCA', 't-SNE', or 'UMAP'."  # noqa
+                f"Reduction method {reduction_method} not recognized. Choose from 'PCA', 't-SNE', or 'UMAP'."  # noqa:E501
             )
 
         plt.figure(figsize=(10, 8))
         if color_by and color_by in self.df.columns:
+            filtered_df[color_by] = pd.Categorical(
+                filtered_df[color_by],
+                categories=sorted(filtered_df[color_by].unique()),
+                ordered=True,
+            )
             sns.scatterplot(
                 x=reduced_embeddings[:, 0],
                 y=reduced_embeddings[:, 1],
@@ -456,82 +417,131 @@ class EmbeddingManager:
             )
         plt.xlabel(x_label)
         plt.ylabel(y_label)
-        plt.title(f"Dimensionality Reduction using {reduction_method}")
+        if color_by:
+            metadata = color_by.split("_")[1]
+            plt.title(
+                f"Dimensionality Reduction using {reduction_method} for {metadata}s"
+            )
         plt.tight_layout()
         plt.show()
 
         if save_path:
-            reduced_df = pd.DataFrame(
+            save_filtered_df_with_components(
+                filtered_df,
                 reduced_embeddings,
-                columns=[f"Component_{i+1}" for i in range(n_components)],
+                n_components,
+                save_path,
+                reduction_method,
             )
-            reduced_df = pd.concat(
-                [filtered_df.reset_index(drop=True), reduced_df], axis=1
+
+    def convert_row_col_to_number(self) -> None:
+        """
+        Convert the Excel-style row and column labels to row and column numbers,
+        and add the results to the DataFrame as new columns.
+        """
+
+        if "Metadata_Row_Number" not in self.df.columns:
+            if not pd.api.types.is_integer_dtype(self.df["Metadata_Row"]):
+                self.df["Metadata_Row_Number"] = self.df["Metadata_Row"].apply(
+                    convert_row_to_number
+                )
+            else:
+                self.df["Metadata_Row_Number"] = self.df["Metadata_Row"]
+
+        if "Metadata_Col_Number" not in self.df.columns:
+            self.df["Metadata_Col_Number"] = self.df["Metadata_Col"].apply(int)
+
+    def apply_Z_score(
+        self,
+        raw_embedding_col: str,
+        save_embedding_col: str | None = "Z_score",
+        use_control: bool | None = True,
+        n_jobs: int | None = -1,
+    ) -> None:
+        """
+        Apply the Z-score normalization to each plate in the DataFrame in
+        parallel using joblib.
+
+        Args:
+            raw_embedding_col (str): Column name for the raw image embeddings in the
+                DataFrame.
+            save_embedding_col (str, optional): DataFrame column name for saving the
+                Z-score normalized embeddings. Defaults to 'Z_score'.
+            use_control (bool, optional): Whether to use control samples for computing
+                the transformation. If True, only control samples are used to compute
+                center_by and reduce_by. Defaults to True.
+            n_jobs (int, optional): Number of jobs to run in parallel. Defaults to -1.
+        """
+
+        def apply_robust_Z_score_to_subset(plate_df):
+            return apply_Z_score_plate(
+                plate_df,
+                raw_embedding_col,
+                save_embedding_col,
             )
-            reduced_df.to_csv(save_path, index=False)
+
+        plates = self.df["Metadata_Plate"].unique()
+
+        results = Parallel(n_jobs=n_jobs)(
+            delayed(apply_robust_Z_score_to_subset)(
+                self.df[self.df["Metadata_Plate"] == plate].copy()
+            )
+            for plate in tqdm(plates, desc="Normalising plates with Z-score")
+        )
+
+        self.df = pd.concat(results, ignore_index=True)
 
     def apply_robust_Z_score(
         self,
-        embedding_name: str,
-        save_embedding_name: str | None = "robust_Z_score",
+        raw_embedding_col: str,
+        save_embedding_col: str | None = "robust_Z_score",
         use_control: bool | None = True,
         center_by: str | None = "mean",
         reduce_by: str | None = "std",
         n_jobs: int | None = -1,
     ) -> None:
         """
-        Apply the robust Z-score normalization to each plate in the embeddings.
+        Apply the robust Z-score normalization to each plate in the DataFrame in
+        parallel using joblib.
 
         Args:
-            embedding_name (str): Name of the embedding to process.
-            save_embedding_name (str, optional): Name for the normalized embedding.
-                Defaults to 'robust_Z_score'.
-            use_control (bool, optional): Use control samples for computing the
-                transformation. Defaults to True.
-            center_by (str, optional): Centering method ('mean' or 'median').
-                Defaults to 'mean'.
-            reduce_by (str, optional): Reduction method ('std', 'iqrs', or 'mad').
-                Defaults to 'std'.
-            n_jobs (int, optional): Number of parallel jobs. Defaults to -1.
+            raw_embedding_col (str): Column name for the raw image embeddings in the
+                DataFrame.
+            save_embedding_col (str, optional): DataFrame column name for saving the
+                robust Z-score normalized embeddings. Defaults to 'robust_Z_score'.
+            n_jobs (int, optional): Number of jobs to run in parallel. Defaults to -1.
+            use_control (bool, optional): Whether to use control samples for computing
+                the transformation. If True, only control samples are used to compute
+                center_by and reduce_by. Defaults to True.
+            center_by (str, optional): Method for centering, either 'mean' or 'median'.
+            reduce_by (str, optional): Method for reduction, either 'std', 'iqrs', or
+            'mad'.
         """
-        if embedding_name not in self.embeddings:
-            raise ValueError(f"Embedding '{embedding_name}' not found.")
 
-        embeddings = self.embeddings[embedding_name]
-        plates = self.df["Metadata_Plate"].unique()
-        normalized_embeddings = np.empty_like(embeddings)
-
-        def process_plate(plate):
-            plate_indices = self.df[self.df["Metadata_Plate"] == plate].index
-            plate_embeddings = embeddings[plate_indices]
-
-            if use_control:
-                control_indices = self.df.loc[plate_indices, "Metadata_Is_dmso"]
-                control_embeddings = plate_embeddings[control_indices.values]
-            else:
-                control_embeddings = plate_embeddings
-
+        def apply_robust_Z_score_to_subset(plate_df):
             center_array, reduce_array = compute_reduce_center(
-                control_embeddings,
+                plate_df,
+                raw_embedding_col,
+                use_control,
                 center_by,
                 reduce_by,
             )
+            return apply_robust_Z_score_plate(
+                plate_df,
+                raw_embedding_col,
+                save_embedding_col,
+                center_array,
+                reduce_array,
+            )
 
-            normalized_plate_embeddings = (
-                plate_embeddings - center_array
-            ) / reduce_array
-
-            return plate_indices, normalized_plate_embeddings
-
+        plates = self.df["Metadata_Plate"].unique()
         results = Parallel(n_jobs=n_jobs)(
-            delayed(process_plate)(plate)
-            for plate in tqdm(plates, desc="Normalizing plates with robust Z-score")
+            delayed(apply_robust_Z_score_to_subset)(
+                self.df[self.df["Metadata_Plate"] == plate].copy()
+            )
+            for plate in tqdm(plates, desc="Normalising plates with robust Z-score")
         )
-
-        for plate_indices, normalized_plate_embeddings in results:
-            normalized_embeddings[plate_indices] = normalized_plate_embeddings
-
-        self.embeddings[save_embedding_name] = normalized_embeddings
+        self.df = pd.concat(results, ignore_index=True)
 
     def find_dmso_controls(self) -> None:
         if "Metadata_Is_dmso" not in self.df.columns:
@@ -544,7 +554,7 @@ class EmbeddingManager:
 
     def test_feature_distributions(
         self,
-        embedding_name: str,
+        vectors_column: str | None = "Embeddings_mean",
         continuous_distributions: list[str] | None = [
             "norm",
             "lognorm",
@@ -562,22 +572,9 @@ class EmbeddingManager:
         ],
         n_jobs: int | None = -1,
     ) -> pd.DataFrame:
-        """
-        Test feature distributions for the specified embedding.
 
-        Args:
-            embedding_name (str): Name of the embedding to test.
-            continuous_distributions (list[str], optional): List of distributions to
-                test against. Defaults to a predefined list.
-            n_jobs (int, optional): Number of parallel jobs. Defaults to -1.
+        embeddings = np.stack(self.df[vectors_column])
 
-        Returns:
-            pd.DataFrame: DataFrame containing distribution test results.
-        """
-        if embedding_name not in self.embeddings:
-            raise ValueError(f"Embedding '{embedding_name}' not found.")
-
-        embeddings = self.embeddings[embedding_name]
         results = pd.DataFrame(
             index=[f"Feature_{i}" for i in range(embeddings.shape[1])]
         )
@@ -604,57 +601,56 @@ class EmbeddingManager:
     def compute_lisi(
         self,
         labels_column: str,
-        embeddings_names: list[str],
-        n_neighbors_list: list[int] | None = [10, 15, 20, 30, 40, 50, 75, 100, 150],
+        vectors_columns: dict | None = {"Current Embeddings": "Embeddings_mean"},
+        n_neighbors_list: list | None = [10, 15, 20, 30, 40, 50, 75, 100, 150],
         graph_title: str | None = "LISI scores for various aggregation pipelines",
-        n_jobs: int = -1,
-        plot: bool = False,
+        n_jobs=-1,
+        plot=False,
     ) -> pd.DataFrame:
         """
-        Compute the LISI scores for multiple embeddings and plot the results.
+        Compute the LISI scores for multiple embedding columns and plot the results.
 
-        Args:
-            labels_column (str): Column name containing the labels.
-            embeddings_names (list[str]): List of embedding names to compute LISI for.
-            n_neighbors_list (list[int], optional): List of neighbor counts for LISI.
-                Defaults to [10, 15, 20, 30, 40, 50, 75, 100, 150].
-            graph_title (str, optional): Title for the LISI scores plot.
-                Defaults to None.
-            n_jobs (int, optional): Number of parallel jobs. Defaults to -1.
-            plot (bool, optional): Whether to plot the LISI scores. Defaults to False.
-
-        Returns:
-            pd.DataFrame: DataFrame with LISI scores for each embedding and overall mean
+        :param vectors_columns: Dictionary with embedding names as keys and column
+        names as values.
+        :param labels_column: Column name containing the labels.
+        :param n_neighbors_list: List of neighbor counts to use for LISI calculation.
+        :param graph_title: Title for the LISI scores plot.
+        :param n_jobs: Number of jobs for parallel processing.
+        :param plot: Whether to plot the LISI scores.
+        :return: DataFrame with LISI scores for each label and the overall mean LISI.
         """
+        for method, column in vectors_columns.items():
+            if column not in self.df.columns:
+                raise ValueError(f"Column {column} not found in the DataFrame.")
+
         if labels_column not in self.df.columns:
-            raise ValueError(f"Column '{labels_column}' not found in the DataFrame.")
+            raise ValueError(f"Column {labels_column} not found in the DataFrame.")
 
         labels = self.df[labels_column].values
         lisi_scores = {}
 
-        for embedding_name in embeddings_names:
-            if embedding_name not in self.embeddings:
-                raise ValueError(f"Embedding '{embedding_name}' not found.")
-
-            embeddings = self.embeddings[embedding_name]
-            lisi_scores[f"Ideal mixing ({embedding_name})"] = []
-
+        for method, column in vectors_columns.items():
+            lisi_scores[f"Ideal mixing ({column})"] = []
             random_labels = np.random.permutation(labels)
+            embeddings = np.stack(self.df[column])
+
             for n_neighbors in tqdm(
                 n_neighbors_list,
-                desc=f"Calculating ideal mixing LISI scores for {embedding_name}",
+                desc=f"Calculating ideal mixing LISI scores for {method}",
             ):
-                score = calculate_lisi_score(
+                lisi_score = calculate_lisi_score(
                     embeddings, random_labels, n_neighbors, n_jobs
                 )
-                lisi_scores[f"Ideal mixing ({embedding_name})"].append(score)
+                lisi_scores[f"Ideal mixing ({column})"].append(lisi_score)
 
-            lisi_scores[embedding_name] = []
+            lisi_scores[method] = []
             for n_neighbors in tqdm(
-                n_neighbors_list, desc=f"Calculating LISI scores for {embedding_name}"
+                n_neighbors_list, desc=f"Calculating LISI scores for {method}"
             ):
-                score = calculate_lisi_score(embeddings, labels, n_neighbors, n_jobs)
-                lisi_scores[embedding_name].append(score)
+                lisi_score = calculate_lisi_score(
+                    embeddings, labels, n_neighbors, n_jobs
+                )
+                lisi_scores[method].append(lisi_score)
 
         lisi_df = pd.DataFrame(lisi_scores, index=n_neighbors_list)
 
@@ -665,19 +661,11 @@ class EmbeddingManager:
 
     def compute_distance_matrix(
         self,
-        embedding_name: str,
+        vectors_column: str | None = "Embeddings_mean",
         distance: str | None = "cosine",
         n_jobs: int | None = -1,
     ) -> None:
-        """
-        Compute a distance matrix for the specified embedding.
-
-        Args:
-            embedding_name (str): Name of the embedding to compute distances for.
-            distance (str, optional): Distance metric to use. Defaults to 'cosine'.
-            n_jobs (int, optional): Number of parallel jobs. Defaults to -1.
-        """
-        valid_distances = [
+        if distance not in [
             "euclidean",
             "manhattan",
             "chebyshev",
@@ -687,53 +675,46 @@ class EmbeddingManager:
             "jaccard",
             "mahalanobis",
             "callable",
-        ]
-
-        if distance not in valid_distances:
+        ]:
             raise ValueError(f"Distance metric '{distance}' is not supported.")
 
-        if embedding_name not in self.embeddings:
-            raise ValueError(f"Embedding '{embedding_name}' not found.")
-
-        embeddings = self.embeddings[embedding_name]
+        embeddings = np.stack(self.df[vectors_column])
         distances = pairwise_distances(
             embeddings, metric=distance, n_jobs=n_jobs
         ).astype(np.float32)
 
-        self.distance_matrices[f"{distance}_distance_matrix_{embedding_name}"] = (
+        self.distance_matrices[f"{distance}_distance_matrix_{vectors_column}"] = (
             distances
         )
 
     def compute_maps(
         self,
         labels_column: str,
-        embeddings_names: list[str],
-        distance: str = "cosine",
-        n_jobs: int = -1,
-        weighted: bool = False,
-        random_maps: bool = False,
-        plot: bool = True,
+        vectors_columns: dict | None = None,
+        distance: str | None = "cosine",
+        n_jobs: int | None = -1,
+        weighted: bool | None = False,
+        random_maps: bool | None = False,
+        plot: bool | None = True,
     ) -> pd.DataFrame:
         """
-        Compute the mean average precision (mAP) for given embeddings and labels.
+        Compute the mean average precision (mAP) for a given distance matrix and label
+        column for multiple embedding columns.
 
-        Args:
-            labels_column (str): Column name containing the labels.
-            embeddings_names (list[str]): List of embedding names to compute mAP for.
-            distance (str, optional): Distance metric to use. Defaults to 'cosine'.
-            n_jobs (int, optional): Number of jobs for parallel processing.
-                Defaults to -1.
-            weighted (bool, optional): Weight the mAP by label frequency.
-                Defaults to False.
-            random_maps (bool, optional): Compute random mAP values. Defaults to False.
-            plot (bool, optional): Whether to plot the mAP results. Defaults to True.
-
-        Returns:
-            pd.DataFrame: DataFrame with mAP and random mAP for each label and the
-            overall mean mAP.
+        :param vectors_columns: Dictionary with embedding names as keys and column
+        names as values.
+        :param labels_column: Column name containing the labels.
+        :param distance: Distance metric to use (default is 'cosine').
+        :param n_jobs: Number of jobs for parallel processing.
+        :param weighted: Boolean indicating whether to weight the mAP by label
+        frequency.
+        :param random_maps: Boolean indicating whether to compute random mAP values.
+        :return: DataFrame with mAP and random mAP for each label and the overall mean
+        mAP.
         """
-        if labels_column not in self.df.columns:
-            raise ValueError(f"Column '{labels_column}' not found in the DataFrame.")
+
+        if vectors_columns is None:
+            vectors_columns = {"Current Embeddings": "Embeddings_mean"}
 
         labels = self.df[labels_column].values
         unique_labels = np.unique(labels)
@@ -750,54 +731,55 @@ class EmbeddingManager:
             label: weight / max_weight for label, weight in label_weights.items()
         }
 
-        for embedding_name in embeddings_names:
-            if embedding_name not in self.embeddings:
-                raise ValueError(f"Embedding '{embedding_name}' not found.")
+        for emb_name, vectors_column in vectors_columns.items():
+            try:
+                if (
+                    f"{distance}_distance_matrix_{vectors_column}"
+                    not in self.distance_matrices
+                ):
+                    self.compute_distance_matrix(vectors_column, distance)
 
-            if (
-                f"{distance}_distance_matrix_{embedding_name}"
-                not in self.distance_matrices
-            ):
-                self.compute_distance_matrix(embedding_name, distance, n_jobs)
+                dist_matrix = self.distance_matrices[
+                    f"{distance}_distance_matrix_{vectors_column}"
+                ]
+                if dist_matrix.shape[0] > 30000:
+                    self.distance_matrices.clear()
 
-            dist_matrix = self.distance_matrices[
-                f"{distance}_distance_matrix_{embedding_name}"
-            ]
-            if dist_matrix.shape[0] > 30000:
-                self.distance_matrices.clear()
+                def compute_maps_label(query_label):
+                    return calculate_maps(
+                        dist_matrix, query_label, np.array(labels), random_maps
+                    )
 
-            def compute_maps_label(query_label):
-                return calculate_maps(
-                    dist_matrix, query_label, np.array(labels), random_maps
+                label_map_results = Parallel(n_jobs=n_jobs)(
+                    delayed(compute_maps_label)(query_label)
+                    for query_label in tqdm(
+                        unique_labels, desc=f"Calculating mAP for {emb_name}"
+                    )
                 )
 
-            label_map_results = Parallel(n_jobs=n_jobs)(
-                delayed(compute_maps_label)(query_label)
-                for query_label in tqdm(
-                    unique_labels, desc=f"Calculating mAP for {embedding_name}"
-                )
-            )
+                for (
+                    query_label,
+                    num_queries,
+                    mean_ap,
+                    mean_random_ap,
+                ) in label_map_results:
+                    if num_queries <= 1:
+                        continue
 
-            for (
-                query_label,
-                num_queries,
-                mean_ap,
-                mean_random_ap,
-            ) in label_map_results:
-                if num_queries <= 1:
-                    continue
+                    if query_label not in combined_results:
+                        combined_results[query_label] = {
+                            "Label": query_label,
+                            "Number of Queries": int(num_queries),
+                        }
 
-                if query_label not in combined_results:
-                    combined_results[query_label] = {
-                        "Label": query_label,
-                        "Number of Queries": int(num_queries),
-                    }
-
-                combined_results[query_label][f"mAP ({embedding_name})"] = mean_ap
-                if random_maps:
-                    combined_results[query_label][
-                        f"Random mAP ({embedding_name})"
-                    ] = mean_random_ap
+                    combined_results[query_label][f"mAP ({emb_name})"] = mean_ap
+                    if random_maps:
+                        combined_results[query_label][
+                            f"Random mAP ({emb_name})"
+                        ] = mean_random_ap
+            except ValueError as e:
+                print(f"Erreur computing map for {emb_name}: {str(e)}")
+                continue
 
         final_results = pd.DataFrame.from_dict(combined_results, orient="index")
 
@@ -833,19 +815,6 @@ class EmbeddingManager:
         return final_results
 
     def filter_and_instantiate(self, **filter_criteria):
-        """
-        Filter the DataFrame and associated embeddings based on criteria, and return
-        a new instance of the class with the filtered data and embeddings.
-
-        Args:
-            **filter_criteria: Key-value pairs specifying the filtering conditions
-                for the DataFrame.
-
-        Returns:
-            EmbeddingManager: A new instance of the class with filtered data and
-            embeddings.
-        """
-        # Filter the DataFrame based on provided criteria
         filtered_df = self.df
         for key, values in filter_criteria.items():
             if key in filtered_df.columns:
@@ -854,21 +823,10 @@ class EmbeddingManager:
                 else:
                     filtered_df = filtered_df[filtered_df[key] == values]
 
-        # Filter the embeddings based on the filtered DataFrame indices
-        filtered_indices = filtered_df.index
-        filtered_embeddings = {
-            name: embeddings[filtered_indices]
-            for name, embeddings in self.embeddings.items()
-        }
-
-        # Create a new instance with the filtered data
         new_instance = EmbeddingManager(
-            df=filtered_df.reset_index(drop=True),
+            df=filtered_df,
             entity=self.entity,
         )
-
-        # Assign filtered embeddings to the new instance
-        new_instance.embeddings = filtered_embeddings
 
         return new_instance
 

@@ -1,6 +1,5 @@
 # Third-Party Libraries
 import numpy as np
-import pandas as pd
 from joblib import Parallel, delayed
 from sklearn.neighbors import NearestNeighbors
 import warnings
@@ -49,7 +48,24 @@ def calculate_statistics(data: np.ndarray) -> dict:
     }
 
 
-def calculate_lisi_score(embeddings, labels, n_neighbors, n_jobs):
+def calculate_lisi_score(
+    embeddings: np.ndarray,
+    labels: np.ndarray,
+    n_neighbors: int,
+    n_jobs: int,
+) -> float:
+    """
+    Calculate LISI scores for given embeddings and labels.
+
+    Args:
+        embeddings (np.ndarray): Array of embeddings.
+        labels (np.ndarray): Array of labels corresponding to embeddings.
+        n_neighbors (int): Number of neighbors to consider for LISI calculation.
+        n_jobs (int): Number of parallel jobs to use.
+
+    Returns:
+        float: Mean LISI score.
+    """
     nbrs = NearestNeighbors(
         n_neighbors=n_neighbors, algorithm="brute", n_jobs=n_jobs
     ).fit(embeddings)
@@ -67,90 +83,41 @@ def calculate_lisi_score(embeddings, labels, n_neighbors, n_jobs):
 
 
 def compute_reduce_center(
-    df: pd.DataFrame,
-    raw_embedding_col: str,
-    use_control: bool,
+    embeddings: np.ndarray,
     center_by: str,
     reduce_by: str,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Compute the center and reduce arrays for normalization.
+    Compute the center and reduce arrays for normalization using numpy.
 
     Args:
-        df (pd.DataFrame): DataFrame containing the data.
-        raw_embedding_col (str): Column name for the raw image embeddings in the
-        DataFrame.
-        center_by (str): Method for centering, either 'mean' or 'median'.
-        reduce_by (str): Method for reduction, either 'std', 'iqrs', or 'mad'.
-        use_control (bool): Whether to use only control samples or the entire DataFrame.
+        embeddings (np.ndarray): Embedding matrix.
+        center_by (str): Centering method ('mean' or 'median').
+        reduce_by (str): Reduction method ('std', 'iqrs', or 'mad').
 
     Returns:
         tuple: Arrays for center and reduce.
     """
-
-    valid_center_by = ["mean", "median"]
-    valid_reduce_by = ["std", "iqrs", "mad"]
-
-    if center_by not in valid_center_by:
-        raise ValueError(
-            f"Invalid 'center_by': {center_by}. Must be one of {valid_center_by}."
-        )
-
-    if reduce_by not in valid_reduce_by:
-        raise ValueError(
-            f"Invalid 'reduce_by': {reduce_by}. Must be one of {valid_reduce_by}."
-        )
-
-    required_columns = [
-        "Metadata_Is_Control",
-        "Metadata_Row_Number",
-        "Metadata_Col_Number",
-        raw_embedding_col,
-    ]
-    for col in required_columns:
-        if col not in df.columns:
-            raise ValueError(f"Missing required column in DataFrame: {col}")
-
-    if use_control:
-        controls = df[df["Metadata_Is_Control"]]
-        if controls.empty:
-            raise ValueError("No control samples found in the DataFrame.")
-        data_subset = controls
-    else:
-        data_subset = df
-
-    max_rows = df["Metadata_Row_Number"].max()
-    max_columns = df["Metadata_Col_Number"].max()
-    embedding_size = df[raw_embedding_col].iloc[0].size
-    data_tensor = np.zeros((max_rows, max_columns, embedding_size), dtype=np.float32)
-
-    row_numbers = df["Metadata_Row_Number"].values - 1
-    col_numbers = df["Metadata_Col_Number"].values - 1
-    embeddings = np.stack(df[raw_embedding_col].values)
-    data_tensor[row_numbers, col_numbers, :] = embeddings
-
-    subset_indices = (
-        data_subset["Metadata_Row_Number"].values - 1,
-        data_subset["Metadata_Col_Number"].values - 1,
-    )
-    subset_tensors_np = data_tensor[subset_indices]
-
     if center_by == "mean":
-        dmso_mu = np.mean(subset_tensors_np, axis=0)
+        center_array = np.mean(embeddings, axis=0)
     elif center_by == "median":
-        dmso_mu = np.median(subset_tensors_np, axis=0)
+        center_array = np.median(embeddings, axis=0)
+    else:
+        raise ValueError("Invalid center_by method. Choose 'mean' or 'median'.")
 
     if reduce_by == "std":
-        dmso_sigma = np.std(subset_tensors_np, axis=0)
+        reduce_array = np.std(embeddings, axis=0)
     elif reduce_by == "iqrs":
-        q1 = np.percentile(subset_tensors_np, 25, axis=0)
-        q3 = np.percentile(subset_tensors_np, 75, axis=0)
-        dmso_sigma = q3 - q1
+        q1 = np.percentile(embeddings, 25, axis=0)
+        q3 = np.percentile(embeddings, 75, axis=0)
+        reduce_array = q3 - q1
     elif reduce_by == "mad":
-        median = np.median(subset_tensors_np, axis=0)
-        dmso_sigma = np.median(np.abs(subset_tensors_np - median), axis=0)
+        median = np.median(embeddings, axis=0)
+        reduce_array = np.median(np.abs(embeddings - median), axis=0)
+    else:
+        raise ValueError("Invalid reduce_by method. Choose 'std', 'iqrs', or 'mad'.")
 
-    return dmso_mu, dmso_sigma
+    return center_array, reduce_array
 
 
 def calculate_map(

@@ -1,7 +1,7 @@
 paths:
   metadata_path: '/home/maxime/synrepos/phenospace/jump_pl/images_embeddings/ResNet50/metadata/load_wells/load_wells.parquet'
   exp_folder: "/home/maxime/synrepos/phenoseeker/tmp/resnet"
-  exp_name: "all_jump_3_norm"
+  exp_name: "ref_before_refactor"
 
 methods:
   - apply_inverse_normal_transform
