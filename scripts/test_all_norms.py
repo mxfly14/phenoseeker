@@ -36,22 +36,23 @@ def evaluate_pipeline(sequence, well_em, results_dfs, current, total) -> dict:
             labels_column="Metadata_JCP2022",
             vectors_columns={f'{sequence["name"]}': col_name},
         )
-        maps_batch = well_em.compute_maps(
-            labels_column="Metadata_Batch",
-            vectors_columns={f'{sequence["name"]}': col_name},
-        )
-        # maps_source = well_em.compute_maps(
-        #    labels_column="Metadata_Source",
+        del compounds_em
+        # maps_batch = well_em.compute_maps(
+        #    labels_column="Metadata_Batch",
         #    vectors_columns={f'{sequence["name"]}': col_name},
         # )
+        maps_source = well_em.compute_maps(
+            labels_column="Metadata_Source",
+            vectors_columns={f'{sequence["name"]}': col_name},
+        )
         # maps_plate = well_em.compute_maps(
         #    labels_column="Metadata_Plate",
         #    vectors_columns={f'{sequence["name"]}': col_name},
         # )
 
         results_dfs["jcp2022"].append(maps_jcp2022)
-        results_dfs["batch"].append(maps_batch)
-        # results_dfs["source"].append(maps_source)
+        # results_dfs["batch"].append(maps_batch)
+        results_dfs["source"].append(maps_source)
         # results_dfs["plate"].append(maps_plate)
 
         logging.info(f"Pipeline '{sequence['name']}' evaluated successfully.")
@@ -94,9 +95,9 @@ def main():
         if selected_plates == "all":
             selected_plates = well_em.df["Metadata_Plate"].unique()
 
-        # selected_plates = [
-        #    item for item in selected_plates if item not in well_em.no_dmso_plates
-        # ]
+        selected_plates = [
+            item for item in selected_plates if item not in well_em.no_dmso_plates
+        ]
 
         well_em.df = well_em.df[well_em.df["Metadata_Plate"].isin(selected_plates)]
 
@@ -105,7 +106,7 @@ def main():
         ]
 
         well_em.load("path_embedding", vectors_column="Embeddings_Raw")
-        well_em.remove_features(threshold=10e-10, vectors_column="Embeddings_Raw")
+        well_em.remove_features(threshold=10e-5, vectors_column="Embeddings_Raw")
 
         logging.info("Embeddings loaded and filtered.")
         logging.info(f"We have an {well_em}.")
@@ -136,9 +137,9 @@ def main():
         # Initialize results DataFrames
         results_dfs = {
             "jcp2022": [],
-            "batch": [],
-            #    "source": [],
-            #     "plate": [],
+            # "batch": [],
+            "source": [],
+            # "plate": [],
         }
 
         results_dfs = evaluate_pipeline(

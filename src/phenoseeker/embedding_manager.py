@@ -679,7 +679,9 @@ class EmbeddingManager:
             raise ValueError(f"Distance metric '{distance}' is not supported.")
 
         embeddings = np.stack(self.df[vectors_column])
-        distances = pairwise_distances(embeddings, metric=distance, n_jobs=n_jobs)
+        distances = pairwise_distances(
+            embeddings, metric=distance, n_jobs=n_jobs
+        ).astype(np.float32)
 
         self.distance_matrices[f"{distance}_distance_matrix_{vectors_column}"] = (
             distances
