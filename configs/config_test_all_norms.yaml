@@ -1,6 +1,6 @@
 paths:
-  metadata_path: '/projects/synsight/data/dinov2_small/raw_well_embeddings/compounds_wells_em_dinov2s.parquet'
-  exp_folder: "/projects/synsight/repos/phenoseeker/tmp/dinov2_s"
+  metadata_path: '/projects/synsight/data/chada/well_embeddings/metadata_raw_mean.parquet'
+  exp_folder: "/projects/synsight/repos/phenoseeker/tmp/chada"
   exp_name: "all_jump_all_norm"
 
 methods:
@@ -10,7 +10,7 @@ methods:
   - apply_robust_Z_score
 
 max_combinations: 10000
-n_methods_max: 4 # Should not be higther than n_methods
+n_methods_max: 1 # Should not be higther than n_methods
 
 #selected_plates: # If not specified or all, the whole JUMP will be used
 #  - UL001651

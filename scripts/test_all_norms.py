@@ -106,7 +106,7 @@ def main():
         ]
 
         well_em.load("path_embedding", vectors_column="Embeddings_Raw")
-        well_em.remove_features(threshold=10e-5, vectors_column="Embeddings_Raw")
+        well_em.remove_features(threshold=10e-10, vectors_column="Embeddings_Raw")
 
         logging.info("Embeddings loaded and filtered.")
         logging.info(f"We have an {well_em}.")
