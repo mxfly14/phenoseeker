@@ -94,9 +94,9 @@ def main():
         if selected_plates == "all":
             selected_plates = well_em.df["Metadata_Plate"].unique()
 
-        # selected_plates = [
-        #    item for item in selected_plates if item not in well_em.no_dmso_plates
-        # ]
+        selected_plates = [
+            item for item in selected_plates if item not in well_em.no_dmso_plates
+        ]
 
         well_em.df = well_em.df[well_em.df["Metadata_Plate"].isin(selected_plates)]
 
@@ -104,8 +104,8 @@ def main():
             well_em.df["Metadata_JCP2022"].isin(well_em.JCP_ID_controls)
         ]
 
-        well_em.load("path_embedding", vectors_column="Embeddings_Raw")
-        well_em.remove_features(threshold=10e-10, vectors_column="Embeddings_Raw")
+        well_em.load("Path_Embeddings", vectors_column="Embeddings_Raw")
+        well_em.remove_features(threshold=10e-5, vectors_column="Embeddings_Raw")
 
         logging.info("Embeddings loaded and filtered.")
         logging.info(f"We have an {well_em}.")
