@@ -1,8 +1,5 @@
 import logging
-import shutil
 import itertools
-import warnings
-from pathlib import Path
 import pandas as pd
 
 from .embedding_manager import EmbeddingManager
@@ -102,26 +99,6 @@ def create_embedding_dict(df: pd.DataFrame, prefix: str | None = "Embeddings_"):
     return embedding_dict
 
 
-def setup_environment(config, config_file_path):
-    """Set up folders, logging, and move the config file to the experiment folder."""
-    warnings.filterwarnings(action="ignore")
-
-    exp_parent_folder = Path(config["paths"]["exp_folder"])
-    exp_name = Path(config["paths"]["exp_name"])
-    exp_folder = exp_parent_folder / exp_name
-    metadata_path = Path(config["paths"]["metadata_path"])
-
-    results_folder = exp_folder / "results"
-
-    exp_folder.mkdir(parents=True, exist_ok=True)
-    results_folder.mkdir(parents=True, exist_ok=True)
-
-    new_config_path = exp_folder / "config_test_all_norms.yaml"
-    shutil.copy(str(config_file_path), str(new_config_path))
-
-    return results_folder, metadata_path
-
-
 def get_method_variations(method):
     variations = []
     if method == "apply_inverse_normal_transform":
@@ -203,7 +180,7 @@ def generate_sequence_name(sequence):
     return name
 
 
-def generate_sequences(methods, n_methods_max):
+def generate_sequences(methods: list[str], n_methods_max: int) -> list:
     """Generate sequences of transformations."""
     method_sequences = []
     for n in range(1, n_methods_max + 1):
@@ -213,3 +190,44 @@ def generate_sequences(methods, n_methods_max):
                 continue
             method_sequences.append(perm)
     return method_sequences
+
+
+def generate_all_pipelines(
+    methods: list[str],
+    n_methods_max: int,
+    max_combinations: int,
+) -> list:
+
+    # Generate and evaluate pipelines
+    method_sequences = generate_sequences(methods, n_methods_max)
+    transformation_sequences = []
+
+    for method_sequence in method_sequences:
+        method_variations_list = []
+        for method in method_sequence:
+            method_variations_list.append(get_method_variations(method))
+        sequence_variations = itertools.product(*method_variations_list)
+        for seq_variation in sequence_variations:
+            name = generate_sequence_name(seq_variation)
+            sequence = {
+                "name": name,
+                "transformations": [dict(t) for t in seq_variation],
+            }
+            transformation_sequences.append(sequence)
+
+    if len(transformation_sequences) >= max_combinations:
+        transformation_sequences = transformation_sequences[:max_combinations]
+
+    return transformation_sequences
+
+
+def cleanup_large_pipelines(well_em: EmbeddingManager, n: int | None = 2):
+    """Remove embedding columns from pipelines with more than two operations."""
+    logging.info("Cleaning up large pipelines to free memory.")
+    columns_to_remove = [
+        col
+        for col in well_em.df.columns
+        if "Embeddings" in col and col.count("__") >= n
+    ]
+    logging.info(f"Removing {len(columns_to_remove)} columns: {columns_to_remove}")
+    well_em.df.drop(columns=columns_to_remove, inplace=True)

@@ -1,7 +1,7 @@
 paths:
-  metadata_path: '/projects/synsight/data/chada/well_embeddings/metadata_raw_mean.parquet'
-  exp_folder: "/projects/synsight/repos/phenoseeker/tmp/chada"
-  exp_name: "all_jump_all_norm"
+  metadata_path: '/home/maxime/synrepos/phenospace/jump_pl/images_embeddings/ResNet50/metadata/load_wells/load_wells.parquet'
+  exp_folder: "/home/maxime/synrepos/phenoseeker/tmp/resnet"
+  exp_name: "all_jump_3_norm"
 
 methods:
   - apply_inverse_normal_transform
@@ -9,12 +9,12 @@ methods:
   - apply_spherizing_transform
   - apply_robust_Z_score
 
-max_combinations: 10000
+max_combinations: 3
 n_methods_max: 1 # Should not be higther than n_methods
 
-#selected_plates: # If not specified or all, the whole JUMP will be used
-#  - UL001651
-#  - UL001765
-#  - UL001643
+selected_plates: # If not specified or all, the whole JUMP will be used
+  - EC000010
+  - GR00004379
+  - A1170386
 
-selected_plates: "all"
+#selected_plates: "all"

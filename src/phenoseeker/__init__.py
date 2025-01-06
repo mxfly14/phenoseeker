@@ -6,12 +6,10 @@ from .utils import (
 )
 
 from .all_norm_functions import (
-    setup_environment,
     create_embedding_dict,
     apply_transformations,
-    generate_sequences,
-    get_method_variations,
-    generate_sequence_name,
+    generate_all_pipelines,
+    cleanup_large_pipelines,
 )
 
 from .embedding_manager import EmbeddingManager
@@ -21,12 +19,9 @@ __all__ = [
     "modify_first_layer",
     "MultiChannelImageDataset",
     "EmbeddingManager",
-    "apply_all_transformations",
     "create_embedding_dict",
-    "setup_environment",
     "apply_transformations",
-    "generate_sequences",
-    "get_method_variations",
-    "generate_sequence_name",
+    "generate_all_pipelines",
     "check_free_memory",
+    "cleanup_large_pipelines",
 ]
