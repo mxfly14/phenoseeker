@@ -202,28 +202,6 @@ def tensor_median(tensor_list: list[np.ndarray]) -> np.ndarray:
     return median_array
 
 
-def process_group_field2well(
-    data: pd.DataFrame,
-    vector_column: str,
-    new_vector_column: str,
-    cols_to_keep: list[str],
-    aggregation,
-):
-    if aggregation == "mean":
-        agg_func = np.mean
-    elif aggregation == "median":
-        agg_func = tensor_median
-    else:
-        raise ValueError(
-            f"Aggregation method '{aggregation}' not recognized. It must be either 'mean' ou 'median'"  # noqa
-        )
-
-    aggregated_vector = agg_func(np.stack(data[vector_column]), axis=0)
-    new_data = data[cols_to_keep].iloc[0].to_dict()
-    new_data[new_vector_column] = aggregated_vector
-    return new_data
-
-
 def convert_row_to_number(row: str) -> int:
     """Convert an Excel-style row label to a row number.
 

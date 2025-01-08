@@ -90,7 +90,7 @@ def plot_heatmaps(matrices: dict[str, np.ndarray], labels: np.ndarray | None) ->
     n = len(covariance_matrix)
 
     if labels is None:
-        labels = ["" for _ in range(n)]
+        labels = [" " for _ in range(n)]
         unique_labels = []
 
     else:

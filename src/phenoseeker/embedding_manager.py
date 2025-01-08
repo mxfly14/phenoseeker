@@ -11,7 +11,8 @@ from sklearn.manifold import TSNE
 from sklearn.metrics import pairwise_distances
 import umap
 import warnings
-from tqdm_joblib import tqdm_joblib
+
+# from tqdm_joblib import tqdm_joblib TODO: should we keep it
 
 from .transform import Spherize
 from .plotting import (
@@ -27,18 +28,14 @@ from .compute import (
     calculate_maps,
 )
 from .norm_functions import (
-    apply_int_subset,
-    apply_spherize_subset,
+    inverse_normal_transform,
     rescale,
 )
 from .utils import (
-    process_group_field2well,
     convert_row_to_number,
     test_distributions,
 )
 
-METADATA_PREFIX = "Metadata_"  # TODO: should we keep this ?
-EMBEDDING_PREFIX = "Embeddings_"
 
 warnings.filterwarnings("ignore")
 
@@ -74,16 +71,29 @@ class EmbeddingManager:
         #    Shuffle the DataFrame TODO: remove it
         self.entity = entity
 
+        self.JCP_ID_poscon = [
+            "JCP2022_085227",
+            "JCP2022_037716",
+            "JCP2022_025848",
+            "JCP2022_046054",
+            "JCP2022_035095",
+            "JCP2022_064022",
+            "JCP2022_050797",
+            "JCP2022_012818",
+        ]
+        self.JCP_ID_controls = self.JCP_ID_poscon + ["JCP2022_033924"]
         # Initialize storage for embeddings as a dictionary
         self.embeddings = {}
         self.distance_matrices = {}
 
         if self.entity == "well":
-            self.df["Metadata_Row", "Metadata_Col"] = self.df["Metadata_Well"].apply(
-                lambda x: pd.Series(self._well_to_row_col(x))
-            )
+            self.find_dmso_controls()
+            if "Metadata_Row" not in self.df.columns:
+                self.df[["Metadata_Row", "Metadata_Col"]] = self.df[
+                    "Metadata_Well"
+                ].apply(lambda x: pd.Series(self._well_to_row_col(x)))
 
-        self.convert_row_col_to_number()
+    #    self.convert_row_col_to_number() #TODO remove if unecessary
 
     def __len__(self) -> int:
         return len(self.df)
@@ -832,7 +842,7 @@ class EmbeddingManager:
             plot_maps(final_results)
         return final_results
 
-    def filter_and_instantiate(self, **filter_criteria):
+    def filter_and_instantiate(self, **filter_criteria) -> "EmbeddingManager":
         """
         Filter the DataFrame and associated embeddings based on criteria, and return
         a new instance of the class with the filtered data and embeddings.
@@ -875,23 +885,35 @@ class EmbeddingManager:
     def grouped_embeddings(
         self,
         group_by: str,
-        vector_column: str | None = "Embeddings_mean",
-        new_vector_column: str | None = "Embeddings_mean",
+        embeddings_name: str = "Embeddings_mean",
+        new_embeddings_name: str = "Embeddings_mean",
         cols_to_keep: list[str] | None = None,
-        aggregation: str | None = "mean",
-        n_jobs: int | None = -1,
-    ):
+        aggregation: str = "mean",
+        n_jobs: int = -1,
+    ) -> "EmbeddingManager":
         """
-        Create a new instance of the class with a grouped DataFrame.
+        Create a new instance of the class with a grouped DataFrame and embeddings.
 
-        :param group_by: The column to group by ('well' ou 'compound').
-        :param vector_column: The column containing the embedding vectors.
-        :param new_vector_column: The column name for the new aggregated embedding.
-        :param cols_to_keep: List of columns to keep in the resulting DataFrame.
-        :param aggregation: The aggregation method to use ('mean' ou 'median').
-        :param n_jobs: Number of parallel jobs to use (-1 for all available cores).
-        :return: A new instance of the class with the grouped DataFrame.
+        Args:
+            group_by (str): The column to group by ('Metadata_Well' or 'Metadata_InChI')
+            embeddings_name (str): Name of the embeddings to group.
+            new_embeddings_name (str): Name for the new aggregated embeddings.
+            cols_to_keep (list[str], optional): List of columns to keep in the resulting
+                DataFrame. Defaults to None.
+            aggregation (str, optional): Aggregation method ('mean' or 'median').
+                Defaults to 'mean'.
+            n_jobs (int, optional): Number of parallel jobs to use (-1 for all available
+                cores). Defaults to -1.
+
+        Returns:
+            EmbeddingManager: A new instance of the class with grouped DataFrame and
+                embeddings.
         """
+        if embeddings_name not in self.embeddings:
+            raise ValueError(
+                f"Embedding '{embeddings_name}' not found in self.embeddings."
+            )
+
         if group_by == "well":
             group_by_columns = ["Metadata_Source", "Metadata_Plate", "Metadata_Well"]
             if cols_to_keep is None:
@@ -900,162 +922,111 @@ class EmbeddingManager:
                     "Metadata_Plate",
                     "Metadata_Well",
                     "Metadata_InChI",
-                    "Metadata_PlateType",
                     "Metadata_Batch",
                     "Metadata_Is_dmso",
                 ]
-
         elif group_by == "compound":
-            ids, _ = pd.factorize(self.df["Metadata_InChI"])
-            self.df["Metadata_InChI_ID"] = ids
-            group_by_columns = "Metadata_InChI_ID"
+            if "Metadata_InChI_ID" not in self.df.columns:
+                ids, _ = pd.factorize(self.df["Metadata_InChI"])
+                self.df["Metadata_InChI_ID"] = ids
+            group_by_columns = ["Metadata_InChI_ID"]
             if cols_to_keep is None:
                 cols_to_keep = ["Metadata_InChI", "Metadata_Is_dmso"]
-
         else:
             raise ValueError(
-                f"Group by '{group_by}' is not implemented. It should be 'well' or 'compound'"  # noqa
+                f"Group by '{group_by}' is not implemented. It should be 'well' or 'compound'."  # noqa
             )
 
-        def aggr_function(data):
-            try:
-                return process_group_field2well(
-                    data, vector_column, new_vector_column, cols_to_keep, aggregation
-                )
-            except Exception as e:
-                print(f"Error processing data: {data}, error: {e}")
-                return None
+        embeddings = self.embeddings[embeddings_name]
+
+        def aggregate_group(group_indices):
+            group_vectors = embeddings[group_indices]
+            if aggregation == "mean":
+                return group_vectors.mean(axis=0)
+            elif aggregation == "median":
+                return np.median(group_vectors, axis=0)
+            else:
+                raise ValueError("Invalid aggregation method. Use 'mean' or 'median'.")
 
         grouped = self.df.groupby(group_by_columns)
+        grouped_indices = grouped.indices
 
-        results_with_none = Parallel(n_jobs=n_jobs)(
-            delayed(aggr_function)(data)
-            for _, data in tqdm(
-                grouped, desc=f"Grouping by {group_by} using {aggregation} aggregation"
+        aggregated_embeddings = np.array(
+            Parallel(n_jobs=n_jobs)(
+                delayed(aggregate_group)(grouped_indices[group])
+                for group in grouped.groups
             )
         )
 
-        results = [result for result in results_with_none if result is not None]
+        grouped_df = grouped[cols_to_keep].first().reset_index()
 
-        if len(results_with_none) > len(results):
-            print(f"There is {len(results_with_none) - len(results)} None {group_by}")
+        # Create new instance with grouped data and embeddings
+        new_instance = EmbeddingManager(df=grouped_df, entity=group_by)
+        new_instance.embeddings = {new_embeddings_name: aggregated_embeddings}
 
-        new_df = pd.DataFrame(results)
-        new_em = EmbeddingManager(new_df, group_by)
-        return new_em
+        return new_instance
 
     def apply_inverse_normal_transform(
         self,
-        raw_embedding_col: str,
-        save_embedding_col: str | None = None,
+        embeddings_name: str,
+        new_embeddings_name: str | None = None,
         indices: np.ndarray | None = None,
         n_jobs: int | None = -1,
     ) -> None:
-
-        if save_embedding_col is None:
-            save_embedding_col = f"int_{raw_embedding_col}"
-
-        plates = self.df["Metadata_Plate"].unique()
-        results = [
-            apply_int_subset(
-                self.df[self.df["Metadata_Plate"] == plate].copy(),
-                raw_embedding_col,
-                save_embedding_col,
-                indices,
-                n_jobs,
-            )
-            for plate in tqdm(plates, desc="Normalising plates with INT")
-        ]
-        self.df = pd.concat(results, ignore_index=True)
-
-    def apply_sphering(
-        self,
-        raw_embedding_col: str,
-        save_embedding_col: str | None = None,
-        center_by: str = "mean",
-        norm_embeddings: bool = True,
-        use_control: bool = True,
-        n_jobs: int | None = -1,
-    ) -> None:
         """
-        Applies sphering (whitening) transformation to embeddings and saves
-            the transformed embeddings.
+        Apply inverse normal transformation to features in a specified embedding.
 
-        :param raw_embedding_col: Name of the column containing raw embeddings.
-        :param save_embedding_col: Name of the column to save the sphered embeddings.
-            If None, appends '_spherize' to the raw column name.
-        :param center_by: Method to center the data ('mean' or 'median').
-        :param norm_embeddings: If True, normalizes the transformed embeddings
-            to unit norm.
-        :param use_control: If True, uses control samples for centering.
-        :param n_jobs: Number of parallel jobs to run. -1 means using all processors.
-        :return: None. The DataFrame `self.df` is modified in place.
+        Args:
+            embeddings_name (str): Name of the embedding to transform.
+            new_embeddings_name (str, optional): Name for the transformed embedding.
+                Defaults to 'int_{embeddings_name}'.
+            indices (np.ndarray | None): Indices to apply the transformation to.
+                If None, all indices are used.
+            n_jobs (int | None): Number of parallel jobs to use. Defaults to -1.
+
+        Returns:
+            None: Modifies `self.embeddings` in place with the transformed embedding.
         """
-        if save_embedding_col is None:
-            save_embedding_col = f"{raw_embedding_col}_spherize"
-
-        # Ensure required columns exist in the DataFrame
-        required_columns = [raw_embedding_col, "Metadata_Is_dmso", "Metadata_Plate"]
-        missing_columns = [
-            col for col in required_columns if col not in self.df.columns
-        ]
-        if missing_columns:
+        if embeddings_name not in self.embeddings:
             raise ValueError(
-                f"The following required columns are missing in the DataFrame: {missing_columns}"  # NOQA
+                f"Embedding '{embeddings_name}' not found in self.embeddings."
             )
 
-        # Get unique plates for parallel processing
+        if new_embeddings_name is None:
+            new_embeddings_name = f"int_{embeddings_name}"
+
+        embeddings = self.embeddings[embeddings_name]
+
+        if indices is None:
+            indices = np.arange(embeddings.shape[1])
+
         plates = self.df["Metadata_Plate"].unique()
+        plate_indices_mapping = {
+            plate: self.df[self.df["Metadata_Plate"] == plate].index for plate in plates
+        }
 
-        def apply_sphering_for_plate(plate_df: pd.DataFrame) -> pd.DataFrame:
-            """
-            Applies sphering to a single plate's embeddings.
+        def transform_plate(plate):
+            plate_indices = plate_indices_mapping[plate]
+            plate_embeddings = embeddings[plate_indices]
 
-            :param plate_df: DataFrame containing data for a single plate.
-            :return: DataFrame with the sphered embeddings added.
-            """
-            try:
-                plate_df = plate_df.reset_index(drop=True)
-                embeddings = np.stack(plate_df[raw_embedding_col].values)
-
-                if use_control:
-                    control_indices = plate_df.index[
-                        plate_df["Metadata_Is_dmso"]
-                    ].tolist()
-                    if not control_indices:
-                        raise ValueError(
-                            f"No control samples found for plate {plate_df['Metadata_Plate'].iloc[0]}"  # NOQA
-                        )
-                else:
-                    control_indices = []
-
-                new_embeddings, center, transformation_matrix = apply_spherize_subset(
-                    embeddings=embeddings,
-                    control_indices=control_indices,
-                    norm_embeddings=norm_embeddings,
-                    center_by=center_by,
-                    use_control=use_control,
+            transformed_plate_embeddings = plate_embeddings.copy()
+            for column_index in indices:
+                transformed_plate_embeddings[:, column_index] = (
+                    inverse_normal_transform(plate_embeddings[:, column_index])
                 )
 
-                plate_df[save_embedding_col] = [
-                    embedding.tolist() for embedding in new_embeddings
-                ]
+            return plate_indices, transformed_plate_embeddings
 
-                return plate_df
-            except Exception as e:
-                print(
-                    f"Error spherizing plate {plate_df['Metadata_Plate'].iloc[0]}: {e}"
-                )
-                return plate_df
+        transformed_embeddings = np.zeros_like(embeddings)
 
         results = Parallel(n_jobs=n_jobs)(
-            delayed(apply_sphering_for_plate)(
-                self.df[self.df["Metadata_Plate"] == plate].copy()
-            )
-            for plate in tqdm(plates, desc="Normalizing plates with Spherize")
+            delayed(transform_plate)(plate)
+            for plate in tqdm(plates, desc="Applying INT by plate")
         )
+        for plate_indices, transformed_plate_embeddings in results:
+            transformed_embeddings[plate_indices] = transformed_plate_embeddings
 
-        self.df = pd.concat(results, ignore_index=True)
+        self.embeddings[new_embeddings_name] = transformed_embeddings
 
     @staticmethod
     def _compute_covariance_and_correlation(
@@ -1078,21 +1049,27 @@ class EmbeddingManager:
 
     def plot_covariance_and_correlation(
         self,
+        embeddings_name: str | None = "Embeddings_mean",
         by_sample: bool | None = False,
         use_dmso: bool | None = True,
         dmso_only: bool | None = False,
-        embedding_col: str | None = "Embeddings_mean",
-        sort_by: str | None = None,
+        sort_by: str | None = "Metadata_Source",
     ) -> None:
         """
-        Crée des visualisations des matrices de covariance et de corrélation.
+        Create visualizations of covariance and correlation matrices.
 
         Args:
-            use_dmso (bool): Si True, filtrer les données en fonction des contrôles.
-            dmso_only (bool): Si True, n'afficher que les échantillons DMSO.
-            embedding_col (str): Le nom de la colonne contenant les embeddings.
-            sort_by (str): Le nom de la colonne pour trier les échantillons.
+            embeddings_name (str): The name of the embedding to use.
+            by_sample (bool): If True, calculate by sample. Defaults to False.
+            use_dmso (bool): If True, filter the data based on DMSO controls.
+            dmso_only (bool): If True, display only DMSO samples.
+            sort_by (str): The column name to sort the samples by.
         """
+        if embeddings_name not in self.embeddings:
+            raise ValueError(
+                f"Embedding '{embeddings_name}' not found in self.embeddings."
+            )
+
         if use_dmso:
             if dmso_only:
                 filtered_df = self.df[self.df["Metadata_Is_dmso"]]
@@ -1101,16 +1078,21 @@ class EmbeddingManager:
         else:
             filtered_df = self.df[~self.df["Metadata_Is_dmso"]]
 
-        if sort_by is not None and sort_by in filtered_df.columns:
-            filtered_df = filtered_df.sort_values(by=sort_by)
-        elif sort_by is not None and sort_by not in filtered_df.columns:
-            print(f"Warning: {sort_by} is not a valid column. No sorting applied.")
+        embeddings = self.embeddings[embeddings_name]
+
+        if sort_by is not None:
+            if sort_by in filtered_df.columns:
+                filtered_df = filtered_df.sort_values(by=sort_by)
+                embeddings = embeddings[filtered_df.index]
+            else:
+                print(f"Warning: {sort_by} is not a valid column. No sorting applied.")
+        else:
+            embeddings = embeddings[filtered_df.index]
 
         print("Computing matrices...")
-        embeddings = np.stack(filtered_df[embedding_col])
-
         print(f"Embeddings shape: {embeddings.shape}")
         matrices = self._compute_covariance_and_correlation(embeddings, by_sample)
+
         labels = (
             filtered_df[sort_by].values if sort_by is not None and by_sample else None
         )
@@ -1119,254 +1101,174 @@ class EmbeddingManager:
 
     def apply_rescale(
         self,
-        raw_embedding_col: str,
-        save_embedding_col: str | None = None,
+        embeddings_name: str,
+        new_embeddings_name: str | None = None,
         scale: str | None = "0-1",
         n_jobs: int | None = -1,
     ) -> None:
-
-        if save_embedding_col is None:
-            save_embedding_col = f"rescale_{raw_embedding_col}"
-
-        def apply_rescale_for_multi_threading(df: pd.DataFrame) -> pd.DataFrame:
-            embeddings = np.stack(df[raw_embedding_col])
-            new_embeddings = rescale(embeddings, scale)
-            df[save_embedding_col] = list(new_embeddings)
-            return df
-
-        plates = self.df["Metadata_Plate"].unique()
-
-        results = Parallel(n_jobs=n_jobs)(
-            delayed(apply_rescale_for_multi_threading)(
-                self.df[self.df["Metadata_Plate"] == plate].copy()
-            )
-            for plate in tqdm(plates, desc="Rescaling features by plates")
-        )
-
-        self.df = pd.concat(results, ignore_index=True)
-
-    @staticmethod
-    def _apply_spherizing_subset(
-        embeddings: np.ndarray,
-        control_indices: list[int],
-        norm_embeddings: bool,
-        method: str | None,
-        use_control: bool | None = True,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Applies sphering (whitening) transformation using the Spherize class to a
-        subset of embeddings.
+        Apply rescaling to the specified embedding and store the result.
 
-        Parameters:
-            embeddings (np.ndarray): Array of shape (n_samples, n_features) containing
-            the embeddings.
-            control_indices (list[int]): List of indices to use as control samples for
-            centering.
-            norm_embeddings (bool): Whether to normalize embeddings to unit norm after
-            sphering.
-            center_by (str): Method to center the data ('mean' or 'median').
-            use_control (bool): Whether to use control samples for centering.
+        Args:
+            embeddings_name (str): Name of the embedding to rescale.
+            new_embeddings_name (str, optional): Name for the rescaled embedding.
+                Defaults to 'rescale_{embeddings_name}'.
+            scale (str, optional): Rescaling method. Defaults to '0-1'.
+            n_jobs (int | None): Number of parallel jobs to use. Defaults to -1.
 
         Returns:
-            tuple: (transformed_embeddings, center, transformation_matrix)
+            None: Modifies `self.embeddings` in place with the rescaled embedding.
         """
-        if method is None:
-            method = "ZCA"  # TODO Choose the best method once yoou know it
-        else:
-            if method not in ["PCA", "ZCA", "PCA-cor", "ZCA-cor"]:
-                raise ValueError(
-                    "Wrong method, should be either PCA, ZCA, PCA-cor or ZCA-cor"
-                )
-
-        if use_control and not control_indices:
+        if embeddings_name not in self.embeddings:
             raise ValueError(
-                "No control indices provided, but `use_control` is set to True."
+                f"Embedding '{embeddings_name}' not found in self.embeddings."
             )
 
-        # Select control samples if use_control is True
-        if use_control:
-            subset_embeddings = embeddings[control_indices]
-        else:
-            subset_embeddings = embeddings
+        if new_embeddings_name is None:
+            new_embeddings_name = f"rescale_{embeddings_name}"
 
-        # Initialize the Spherize transformer
-        spherize = Spherize(epsilon=1e-5, center=True, method=method)
+        embeddings = self.embeddings[embeddings_name]
 
-        # Fit the Spherize transformer on the subset
-        spherize.fit(subset_embeddings)
+        def rescale_plate(plate_indices):
+            plate_embeddings = embeddings[plate_indices]
+            return rescale(plate_embeddings, scale)
 
-        # Transform all embeddings using the fitted transformer
-        transformed_embeddings = spherize.transform(embeddings)
+        plates = self.df["Metadata_Plate"].unique()
+        plate_indices_mapping = {
+            plate: self.df[self.df["Metadata_Plate"] == plate].index for plate in plates
+        }
 
-        # Retrieve the center used for sphering
-        if spherize.method in ["PCA-cor", "ZCA-cor"]:
-            center = spherize.standard_scaler.mean_
-        else:
-            if spherize.center:
-                center = spherize.mean_centerer.mean_
-            else:
-                center = np.zeros(embeddings.shape[1])
+        rescaled_embeddings = np.zeros_like(embeddings)
 
-        # Retrieve the transformation matrix
-        transformation_matrix = spherize.W
+        results = Parallel(n_jobs=n_jobs)(
+            delayed(rescale_plate)(plate_indices_mapping[plate])
+            for plate in tqdm(plates, desc="Rescaling features by plates")
+        )
+        for plate, rescaled_plate_embeddings in zip(plates, results):
+            rescaled_embeddings[plate_indices_mapping[plate]] = (
+                rescaled_plate_embeddings
+            )
 
-        # Normalize embeddings to unit norm if requested
-        if norm_embeddings:
-            tolerance = 1e-10
-            norms = np.linalg.norm(transformed_embeddings, axis=1, keepdims=True)
-            small_norms = norms < tolerance
-            if np.any(small_norms):
-                print(
-                    f"Number of small norms before normalization: {np.sum(small_norms)}"
-                )
-                norms[small_norms] = 1.0  # Prevent division by zero
-            transformed_embeddings /= norms
-
-        return transformed_embeddings, center, transformation_matrix
+        self.embeddings[new_embeddings_name] = rescaled_embeddings
 
     def apply_spherizing_transform(
         self,
-        raw_embedding_col: str,
-        save_embedding_col: str | None = None,
+        embeddings_name: str,
+        new_embeddings_name: str | None = None,
         method: str | None = "ZCA",
-        norm_embeddings: bool | None = True,
-        use_control: bool | None = True,
-        n_jobs: int | None = 1,  # TODO understand why it works better this way...
+        norm_embeddings: bool = True,
+        use_control: bool = True,
+        n_jobs: int = -1,
     ) -> None:
         """
-        Applies a sphering (whitening) transformation to embeddings in the DataFrame
-        using the Spherize class. Processes each plate in parallel and saves the
-        transformed embeddings.
+        Apply a sphering (whitening) transformation to embeddings and store the result.
 
-        Parameters:
-            raw_embedding_col (str): Column name for the raw embeddings in the df.
-            save_embedding_col (str, optional): Column name to save the sphered
-                embeddings. If None, appends '_spherize' to the raw column name.
-                Defaults to None.
-            method (str, optional): Sphering method to use. Must be one of 'PCA', 'ZCA',
-                'PCA-cor', or 'ZCA-cor'. Defaults to 'ZCA'.
+        Args:
+            embeddings_name (str): Name of the embedding to transform.
+            new_embeddings_name (str, optional): Name for the transformed embedding.
+                Defaults to '{embeddings_name}_spherize'.
+            method (str, optional): Sphering method ('PCA', 'ZCA', 'PCA-cor', 'ZCA-cor')
+                Defaults to 'ZCA'.
             norm_embeddings (bool, optional): Whether to normalize embeddings to unit
                 norm after sphering. Defaults to True.
             use_control (bool, optional): Whether to use control samples for computing
-                the sphering transformation. If True, only control samples are used to
-                fit the sphering model. Defaults to True.
-            n_jobs (int, optional): Number of parallel jobs to run. -1 uses all
-                available cores. Defaults to -1.
+                the sphering transformation. Defaults to True.
+            n_jobs (int, optional): Number of parallel jobs to use. Defaults to -1.
 
         Returns:
-            None: The DataFrame `self.df` is modified in place with the new sphered
-            embeddings added in the specified `save_embedding_col`.
-
-        Side Effects:
-            - Adds a new column to `self.df` with the sphered embeddings.
-            - Stores the centers and transformation matrices for each plate in
-            `self.spherize_centers` and `self.spherize_transformation_matrices`,
-            respectively.
-
-        Raises:
-            ValueError: If required columns are missing in `self.df`.
-            ValueError: If no control samples are found for a plate when `use_control`
-                is True.
-            ValueError: If an invalid `method` is specified.
-
-        Notes:
-            - The method processes each unique plate in `self.df['Metadata_Plate']`
-                in parallel.
-            - Requires the following columns to be present in `self.df`:
-                - `raw_embedding_col`
-                - `'Metadata_Is_dmso'` (boolean indicating control samples)
-                - `'Metadata_Plate'` (identifier for plates)
-
-            - The sphering transformation is fitted using control samples if
-                `use_control` is True;
-                otherwise, all samples in the plate are used.
-            - Embeddings are stored as lists in the DataFrame cells for compatibility
-                with downstream processes.
-
-        Example:
-            >>> self.apply_spherizing_transform(
-                    raw_embedding_col='embeddings',
-                    save_embedding_col='embeddings_sphered',
-                    method='ZCA',
-                    norm_embeddings=True,
-                    use_control=True,
-                    n_jobs=-1,
-                )
-
+            None: Modifies `self.embeddings` in place with the transformed embedding.
         """
-        if save_embedding_col is None:
-            save_embedding_col = f"{raw_embedding_col}_spherize"
-
-        # Ensure required columns exist in the DataFrame
-        required_columns = [raw_embedding_col, "Metadata_Is_dmso", "Metadata_Plate"]
-        missing_columns = [
-            col for col in required_columns if col not in self.df.columns
-        ]
-        if missing_columns:
+        if embeddings_name not in self.embeddings:
             raise ValueError(
-                f"The following required columns are missing in the DataFrame: {missing_columns}"  # NOQA
+                f"Embedding '{embeddings_name}' not found in self.embeddings."
             )
 
-        # Retrieve unique plates for parallel processing
-        plates = self.df["Metadata_Plate"].unique()
+        if new_embeddings_name is None:
+            new_embeddings_name = f"{embeddings_name}_spherize"
 
-        def apply_spherizing_for_plate(plate_df: pd.DataFrame) -> pd.DataFrame:
-            """
-            Applies sphering transformation to a single plate's embeddings.
+        embeddings = self.embeddings[embeddings_name]
 
-            Parameters:
-                plate_df (pd.DataFrame): DataFrame subset for a single plate.
-
-            Returns:
-                pd.DataFrame: DataFrame with the sphered embeddings added.
-            """
-            try:
-                plate_df = plate_df.reset_index(drop=True)
-                embeddings = np.stack(plate_df[raw_embedding_col].values)
-
-                if use_control:
-                    control_indices = plate_df.index[
-                        plate_df["Metadata_Is_dmso"]
-                    ].tolist()
-                    if not control_indices:
-                        raise ValueError(
-                            f"No control samples found for plate {plate_df['Metadata_Plate'].iloc[0]}"  # NOQA
-                        )
-                else:
-                    control_indices = []
-
-                transformed_embeddings, center, transformation_matrix = (
-                    self._apply_spherizing_subset(
-                        embeddings=embeddings,
-                        control_indices=control_indices,
-                        norm_embeddings=norm_embeddings,
-                        method=method,
-                        use_control=use_control,
-                    )
-                )
-
-                plate_df[save_embedding_col] = [
-                    embedding for embedding in transformed_embeddings
+        def sphering_plate(plate_indices):
+            plate_embeddings = embeddings[plate_indices]
+            if use_control:
+                control_indices = [
+                    i for i in plate_indices if self.df.iloc[i]["Metadata_Is_dmso"]
                 ]
+                if not control_indices:
+                    raise ValueError(
+                        f"No control samples found for plate: {self.df.loc[plate_indices[0], 'Metadata_Plate']}."  # noqa
+                    )
+                subset_embeddings = embeddings[control_indices]
+            else:
+                subset_embeddings = plate_embeddings
 
-                return plate_df
-            except Exception as e:
-                print(
-                    f"Error spherizing plate {plate_df['Metadata_Plate'].iloc[0]}: {e}"
-                )
-                return plate_df
+            # Initialize and fit the spherize transformer
+            spherize = Spherize(epsilon=1e-5, center=True, method=method)
+            spherize.fit(subset_embeddings)
 
-        # Apply sphering in parallel across all plates
+            # Transform embeddings
+            transformed_embeddings = spherize.transform(plate_embeddings)
 
-        with tqdm_joblib(
-            tqdm(desc="Normalizing plates with Spherize", total=len(plates))
-        ):
-            results = Parallel(n_jobs=n_jobs)(
-                delayed(apply_spherizing_for_plate)(
-                    self.df[self.df["Metadata_Plate"] == plate].copy()
-                )
-                for plate in plates
+            # Normalize if requested
+            if norm_embeddings:
+                norms = np.linalg.norm(transformed_embeddings, axis=1, keepdims=True)
+                norms[norms < 1e-10] = 1.0  # Avoid division by zero
+                transformed_embeddings /= norms
+
+            return transformed_embeddings
+
+        plates = self.df["Metadata_Plate"].unique()
+        plate_indices_mapping = {
+            plate: self.df[self.df["Metadata_Plate"] == plate].index.to_numpy()
+            for plate in plates
+        }
+
+        sphered_embeddings = np.zeros_like(embeddings)
+
+        results = Parallel(n_jobs=n_jobs)(
+            delayed(sphering_plate)(plate_indices_mapping[plate])
+            for plate in tqdm(
+                plates, desc="Normalizing plates with Spherize transformation"
+            )
+        )
+        for plate, transformed_plate_embeddings in zip(plates, results):
+            sphered_embeddings[plate_indices_mapping[plate]] = (
+                transformed_plate_embeddings
             )
 
-        # Concatenate all processed subsets back into the main DataFrame
-        self.df = pd.concat(results, ignore_index=True)
+        self.embeddings[new_embeddings_name] = sphered_embeddings
+
+    def save_to_folder(
+        self,
+        folder_path: Path,
+        embeddings_name: str = "all",
+    ) -> None:
+        """
+        Save the DataFrame as a Parquet file and embeddings as NPY files.
+
+        Args:
+            folder_path (Path): Path to the folder where files will be saved.
+            embeddings_name (str, optional): Name of the embedding to save. Use 'all'
+                to save all embeddings. Defaults to 'all'.
+
+        Returns:
+            None
+        """
+        folder_path.mkdir(parents=True, exist_ok=True)
+
+        # Save DataFrame as Parquet
+        parquet_path = folder_path / "metadata.parquet"
+        self.df.to_parquet(parquet_path, index=False)
+
+        # Save embeddings
+        if embeddings_name == "all":
+            for name, embedding in self.embeddings.items():
+                npy_path = folder_path / f"{name}.npy"
+                np.save(npy_path, embedding)
+        elif embeddings_name in self.embeddings:
+            npy_path = folder_path / f"{embeddings_name}.npy"
+            np.save(npy_path, self.embeddings[embeddings_name])
+        else:
+            raise ValueError(
+                f"Embedding '{embeddings_name}' not found in self.embeddings."
+            )
