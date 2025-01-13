@@ -1,8 +1,8 @@
 paths:
-  metadata_path: '/home/maxime/data/jump_embeddings/metadata_openphenom.parquet'
-  embeddings_path: '/home/maxime/data/jump_embeddings/embeddings_openphenom.npy'
-  exp_folder: "/home/maxime/synrepos/phenoseeker/tmp/openphenom"
-  exp_name: "48_plates_3_combi"
+  metadata_path: '/home/maxime/data/jump_embeddings/metadata_dinov2_g.parquet'
+  embeddings_path: '/home/maxime/data/jump_embeddings/embeddings_dinov2_g.npy'
+  exp_folder: "/home/maxime/synrepos/phenoseeker/tmp/dinov2_g"
+  exp_name: "48_plates_2_combi"
 
 methods:
   - apply_inverse_normal_transform
@@ -12,7 +12,7 @@ methods:
   - apply_median_polish
 
 max_combinations: 100000
-n_methods_max: 3 # Should not be higther than n_methods
+n_methods_max: 2 # Should not be higther than n_methods
 # If not specified or all, the whole JUMP will be used
 
 #  or balance_selection, a balanced selection to test all normalisations
