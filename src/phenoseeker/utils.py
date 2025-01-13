@@ -202,47 +202,6 @@ def tensor_median(tensor_list: list[np.ndarray]) -> np.ndarray:
     return median_array
 
 
-def process_group_field2well(
-    data: pd.DataFrame,
-    vector_column: str,
-    new_vector_column: str,
-    cols_to_keep: list[str],
-    aggregation,
-):
-    if aggregation == "mean":
-        agg_func = np.mean
-    elif aggregation == "median":
-        agg_func = tensor_median
-    else:
-        raise ValueError(
-            f"Aggregation method '{aggregation}' not recognized. It must be either 'mean' ou 'median'"  # noqa
-        )
-
-    aggregated_vector = agg_func(np.stack(data[vector_column]), axis=0)
-    new_data = data[cols_to_keep].iloc[0].to_dict()
-    new_data[new_vector_column] = aggregated_vector
-    return new_data
-
-
-def save_filtered_df_with_components(
-    filtered_df: pd.DataFrame,
-    reduced_embeddings: np.ndarray,
-    n_components: int,
-    save_path: Path,
-    reduction_method: str,
-):
-    component_columns = [
-        f"Component_{i+1}_of_{reduction_method}" for i in range(n_components)
-    ]
-    components_df = pd.DataFrame(reduced_embeddings, columns=component_columns)
-    filtered_df = pd.concat([filtered_df, components_df], axis=1)
-    save_path = Path(save_path)
-    save_path.mkdir(exist_ok=True)
-
-    csv_path = save_path / f"{reduction_method}.csv"
-    filtered_df.to_csv(csv_path, index=False)
-
-
 def convert_row_to_number(row: str) -> int:
     """Convert an Excel-style row label to a row number.
 
