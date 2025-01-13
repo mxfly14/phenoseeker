@@ -81,3 +81,63 @@ def rescale(data: np.ndarray, scale: str) -> np.ndarray:
         rescaled_data = 2 * (data - min_vals) / range_vals - 1
 
     return rescaled_data
+
+
+def median_polish(
+    data: np.ndarray[np.float64],
+    n_iter: int = 10,
+    tol: float = 1e-6,
+) -> dict:
+    """
+    Performs median polish on a 2-D array.
+
+    Args:
+        data: Input 2-D array (rows x columns) for median polishing.
+        n_iter: Maximum number of iterations to perform. Defaults to 10.
+        tol: Convergence tolerance for residual change. Defaults to 1e-6.
+
+    Returns:
+        A dictionary containing:
+            - 'ave': Grand effect (overall mean after polishing).
+            - 'row': Row effects.
+            - 'col': Column effects.
+            - 'r': Final residual matrix.
+    """
+    assert data.ndim == 2, "Input must be a 2D array"
+
+    # Initialize
+    data = data.copy()
+    ave = np.median(data)  # Grand effect
+    data -= ave
+    row_effects = np.zeros(data.shape[0], dtype=np.float64)
+    col_effects = np.zeros(data.shape[1], dtype=np.float64)
+    previous_r = data.copy()  # To track convergence
+
+    for iteration in range(n_iter):
+        # Update row effects
+        row_medians = np.median(data, axis=1)
+        row_effects += row_medians
+        data -= row_medians[:, None]
+
+        # Update column effects
+        col_medians = np.median(data, axis=0)
+        col_effects += col_medians
+        data -= col_medians
+
+        # Update grand effect
+        overall_median = np.median(data)
+        ave += overall_median
+        data -= overall_median
+
+        # Convergence check
+        max_residual_change = np.max(np.abs(data - previous_r))
+        previous_r = data.copy()
+        if max_residual_change < tol:
+            break
+
+    return {
+        "ave": ave,
+        "row": row_effects,
+        "col": col_effects,
+        "r": data,
+    }

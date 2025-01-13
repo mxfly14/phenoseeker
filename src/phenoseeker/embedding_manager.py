@@ -12,7 +12,7 @@ from sklearn.metrics import pairwise_distances
 import umap
 import warnings
 
-# from tqdm_joblib import tqdm_joblib TODO: should we keep it
+from tqdm_joblib import tqdm_joblib
 
 from .transform import Spherize
 from .plotting import (
@@ -25,11 +25,13 @@ from .compute import (
     compute_reduce_center,
     calculate_statistics,
     calculate_lisi_score,
-    calculate_maps,
+    calculate_map_efficient,
+    #    calculate_maps,
 )
 from .norm_functions import (
     inverse_normal_transform,
     rescale,
+    median_polish,
 )
 from .utils import (
     convert_row_to_number,
@@ -93,7 +95,7 @@ class EmbeddingManager:
                     "Metadata_Well"
                 ].apply(lambda x: pd.Series(self._well_to_row_col(x)))
 
-    #    self.convert_row_col_to_number() #TODO remove if unecessary
+        self.convert_row_col_to_number()
 
     def __len__(self) -> int:
         return len(self.df)
@@ -118,6 +120,7 @@ class EmbeddingManager:
         self,
         embedding_name: str,
         file_path: str | Path,
+        dtype: type | None = np.float64,
     ) -> None:
         """
         Load embeddings from a .npy file and store them in the embeddings dictionary.
@@ -137,7 +140,7 @@ class EmbeddingManager:
                 f"Number of embeddings ({embeddings.shape[0]}) does not match number of metadata rows ({len(self.df)})."  # noqa
             )
 
-        self.embeddings[embedding_name] = embeddings
+        self.embeddings[embedding_name] = embeddings.astype(dtype)
 
     def get_embeddings(self, embedding_name: str) -> np.ndarray:
         """
@@ -482,8 +485,8 @@ class EmbeddingManager:
 
     def apply_robust_Z_score(
         self,
-        embedding_name: str,
-        save_embedding_name: str | None = "robust_Z_score",
+        embeddings_name: str,
+        new_embeddings_name: str | None = "robust_Z_score",
         use_control: bool | None = True,
         center_by: str | None = "mean",
         reduce_by: str | None = "std",
@@ -494,7 +497,7 @@ class EmbeddingManager:
 
         Args:
             embedding_name (str): Name of the embedding to process.
-            save_embedding_name (str, optional): Name for the normalized embedding.
+            new_embeddings_name (str, optional): Name for the normalized embedding.
                 Defaults to 'robust_Z_score'.
             use_control (bool, optional): Use control samples for computing the
                 transformation. Defaults to True.
@@ -504,10 +507,10 @@ class EmbeddingManager:
                 Defaults to 'std'.
             n_jobs (int, optional): Number of parallel jobs. Defaults to -1.
         """
-        if embedding_name not in self.embeddings:
-            raise ValueError(f"Embedding '{embedding_name}' not found.")
+        if embeddings_name not in self.embeddings:
+            raise ValueError(f"Embedding '{embeddings_name}' not found.")
 
-        embeddings = self.embeddings[embedding_name]
+        embeddings = self.embeddings[embeddings_name]
         plates = self.df["Metadata_Plate"].unique()
         normalized_embeddings = np.empty_like(embeddings)
 
@@ -541,7 +544,7 @@ class EmbeddingManager:
         for plate_indices, normalized_plate_embeddings in results:
             normalized_embeddings[plate_indices] = normalized_plate_embeddings
 
-        self.embeddings[save_embedding_name] = normalized_embeddings
+        self.embeddings[new_embeddings_name] = normalized_embeddings
 
     def find_dmso_controls(self) -> None:
         if "Metadata_Is_dmso" not in self.df.columns:
@@ -678,6 +681,7 @@ class EmbeddingManager:
         embedding_name: str,
         distance: str | None = "cosine",
         n_jobs: int | None = -1,
+        dtype: type | None = np.float32,
     ) -> None:
         """
         Compute a distance matrix for the specified embedding.
@@ -708,7 +712,7 @@ class EmbeddingManager:
         embeddings = self.embeddings[embedding_name]
         distances = pairwise_distances(
             embeddings, metric=distance, n_jobs=n_jobs
-        ).astype(np.float32)
+        ).astype(dtype)
 
         self.distance_matrices[f"{distance}_distance_matrix_{embedding_name}"] = (
             distances
@@ -717,12 +721,13 @@ class EmbeddingManager:
     def compute_maps(
         self,
         labels_column: str,
-        embeddings_names: list[str],
+        embeddings_names: list[str] | str,
         distance: str = "cosine",
         n_jobs: int = -1,
         weighted: bool = False,
         random_maps: bool = False,
-        plot: bool = True,
+        plot: bool = False,
+        dtype: type | None = np.float32,
     ) -> pd.DataFrame:
         """
         Compute the mean average precision (mAP) for given embeddings and labels.
@@ -737,6 +742,8 @@ class EmbeddingManager:
                 Defaults to False.
             random_maps (bool, optional): Compute random mAP values. Defaults to False.
             plot (bool, optional): Whether to plot the mAP results. Defaults to True.
+            dtype (type, optional): Data type for distance matrix computation.
+                Defaults to np.float32.
 
         Returns:
             pd.DataFrame: DataFrame with mAP and random mAP for each label and the
@@ -749,7 +756,6 @@ class EmbeddingManager:
         unique_labels = np.unique(labels)
 
         combined_results = {}
-
         label_frequencies = {label: np.sum(labels == label) for label in unique_labels}
         total_labels = len(labels)
         label_weights = {
@@ -760,26 +766,55 @@ class EmbeddingManager:
             label: weight / max_weight for label, weight in label_weights.items()
         }
 
+        if isinstance(embeddings_names, str):
+            embeddings_names = [embeddings_names]
+
         for embedding_name in embeddings_names:
             if embedding_name not in self.embeddings:
                 raise ValueError(f"Embedding '{embedding_name}' not found.")
 
+            # Compute or retrieve distance matrix
             if (
                 f"{distance}_distance_matrix_{embedding_name}"
                 not in self.distance_matrices
             ):
-                self.compute_distance_matrix(embedding_name, distance, n_jobs)
+                self.compute_distance_matrix(embedding_name, distance, n_jobs, dtype)
 
             dist_matrix = self.distance_matrices[
                 f"{distance}_distance_matrix_{embedding_name}"
             ]
-            if dist_matrix.shape[0] > 30000:
-                self.distance_matrices.clear()
 
             def compute_maps_label(query_label):
-                return calculate_maps(
-                    dist_matrix, query_label, np.array(labels), random_maps
+                indices_with_query_label = np.where(labels == query_label)[0]
+                count = len(indices_with_query_label)
+                if count <= 1:
+                    return query_label, count, None, None
+
+                sorted_indices = np.argsort(
+                    dist_matrix[indices_with_query_label], axis=1
                 )
+                mAP = calculate_map_efficient(
+                    dist_matrix,
+                    labels,
+                    indices_with_query_label,
+                    sorted_indices,
+                    query_label,
+                )
+
+                random_map = None
+                if random_maps:
+                    random_labels = labels.copy()
+                    np.random.shuffle(random_labels)
+                    random_indices = np.where(random_labels == query_label)[0]
+                    random_map = calculate_map_efficient(
+                        dist_matrix,
+                        random_labels,
+                        random_indices,
+                        sorted_indices,
+                        query_label,
+                    )
+
+                return query_label, count, mAP, random_map
 
             label_map_results = Parallel(n_jobs=n_jobs)(
                 delayed(compute_maps_label)(query_label)
@@ -788,12 +823,7 @@ class EmbeddingManager:
                 )
             )
 
-            for (
-                query_label,
-                num_queries,
-                mean_ap,
-                mean_random_ap,
-            ) in label_map_results:
+            for query_label, num_queries, mean_ap, mean_random_ap in label_map_results:
                 if num_queries <= 1:
                     continue
 
@@ -840,6 +870,7 @@ class EmbeddingManager:
         ]
         if plot:
             plot_maps(final_results)
+
         return final_results
 
     def filter_and_instantiate(self, **filter_criteria) -> "EmbeddingManager":
@@ -1272,3 +1303,80 @@ class EmbeddingManager:
             raise ValueError(
                 f"Embedding '{embeddings_name}' not found in self.embeddings."
             )
+
+    def apply_median_polish(
+        self,
+        embeddings_name: str,
+        new_embeddings_name: str = "Embeddings_MedianPolish",
+        n_jobs: int = -1,
+    ) -> None:
+        """
+        Apply median polish to each component of embeddings for each plate.
+
+        Args:
+            embeddings_name (str): Name of the embedding to process.
+            new_embeddings_name (str, optional): Name for the adjusted embeddings.
+                Defaults to 'Embeddings_MedianPolish'.
+            n_jobs (int, optional): Number of parallel jobs to use. Defaults to -1.
+
+        Returns:
+            None: Updates `self.embeddings` in place with the adjusted embeddings.
+        """
+        if embeddings_name not in self.embeddings:
+            raise ValueError(
+                f"Embedding '{embeddings_name}' not found in self.embeddings."
+            )
+
+        embeddings = self.embeddings[embeddings_name]
+
+        # Ensure adjusted_embeddings is writable
+        adjusted_embeddings = np.zeros_like(embeddings, dtype=embeddings.dtype)
+
+        def process_plate(plate):
+            """
+            Process a single plate: Apply median polish and return adjusted embeddings.
+            """
+            plate_indices = self.df[self.df["Metadata_Plate"] == plate].index
+            plate_embeddings = embeddings[plate_indices]
+
+            max_rows = self.df.loc[plate_indices, "Metadata_Row_Number"].max()
+            max_columns = self.df.loc[plate_indices, "Metadata_Col_Number"].max()
+
+            n_components = plate_embeddings.shape[1]
+            data_tensor = np.zeros((max_rows, max_columns, n_components))
+
+            for i, idx in enumerate(plate_indices):
+                row = self.df.loc[idx, "Metadata_Row_Number"] - 1
+                col = self.df.loc[idx, "Metadata_Col_Number"] - 1
+                data_tensor[row, col, :] = plate_embeddings[i]
+
+            adjusted_data_tensor = np.zeros_like(data_tensor)
+            for i in range(n_components):
+                component_data = data_tensor[:, :, i]
+                result = median_polish(component_data)
+                adjusted_data_tensor[:, :, i] = (
+                    result["ave"] + result["row"][:, None] + result["col"][None, :]
+                )
+
+            # Map adjusted data back to the embedding array
+            plate_adjusted_embeddings = np.zeros_like(plate_embeddings)
+            for i, idx in enumerate(plate_indices):
+                row = self.df.loc[idx, "Metadata_Row_Number"] - 1
+                col = self.df.loc[idx, "Metadata_Col_Number"] - 1
+                plate_adjusted_embeddings[i] = adjusted_data_tensor[row, col, :]
+
+            return plate_indices, plate_adjusted_embeddings
+
+        plates = self.df["Metadata_Plate"].unique()
+
+        with tqdm_joblib(tqdm(total=len(plates), desc="Applying Median Polish")):
+            results = Parallel(n_jobs=n_jobs)(
+                delayed(process_plate)(plate) for plate in plates
+            )
+
+        # Combine results from all plates
+        for plate_indices, plate_adjusted_embeddings in results:
+            adjusted_embeddings[plate_indices] = plate_adjusted_embeddings
+
+        # Store the adjusted embeddings
+        self.embeddings[new_embeddings_name] = adjusted_embeddings

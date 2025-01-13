@@ -5,6 +5,82 @@ import pandas as pd
 from .embedding_manager import EmbeddingManager
 
 
+def apply_transformations(
+    well_em: EmbeddingManager,
+    sequence: dict,
+    starting_embedding_name: str | None = "Embeddings_Raw",
+) -> str:
+    """
+    Apply a sequence of transformations to the embeddings in the EmbeddingManager.
+
+    Args:
+        well_em (EmbeddingManager): Instance of the EmbeddingManager.
+        sequence (dict): Transformation sequence containing a name and a list of
+            transformations. Each transformation : a dict with keys 'method' and
+            'params'.
+        starting_embedding_name (str, optional): The name of the embedding to start with
+            Defaults to 'Embeddings_Raw'.
+
+    Returns:
+        str: The name of the final embedding after applying all transformations.
+    """
+    # Start with the specified initial embedding name
+    current_embedding_name = starting_embedding_name
+    sequence_name = sequence["name"]
+
+    for transformation in sequence["transformations"]:
+        method_name = transformation.get("method")
+        params = transformation.get("params") or {}
+
+        # Generate the suffix for the current transformation
+        suffix = get_suffix(method_name, params)
+        produces_new_embedding = suffix != ""
+        save_embedding_name = (
+            f"{current_embedding_name}__{suffix}"
+            if produces_new_embedding
+            else current_embedding_name
+        )
+
+        # Check if this full transformation suite has already been applied
+        if produces_new_embedding and save_embedding_name in well_em.embeddings:
+            logging.info(
+                f"Seq : '{sequence_name}', '{save_embedding_name}' already exists."
+            )
+            current_embedding_name = save_embedding_name
+            continue
+
+        try:
+            logging.info(
+                f"Seq : '{sequence_name}', applying '{method_name}' with parameters: {params}"  # noqa
+            )
+            method = getattr(well_em, method_name)
+            method_params = {"embeddings_name": current_embedding_name, **params}
+            if produces_new_embedding:
+                method_params["new_embeddings_name"] = save_embedding_name
+            method(**method_params)
+            current_embedding_name = save_embedding_name or current_embedding_name
+
+        except Exception as e:
+            logging.error(
+                f"Seq : '{sequence_name}', an error occurred while applying '{method_name}': {e}"  # noqa
+            )
+            break
+
+    return current_embedding_name
+
+
+def create_embedding_dict(df: pd.DataFrame, prefix: str | None = "Embeddings_"):
+    if df.empty:
+        print("La DataFrame est vide.")
+        return {}
+    embedding_columns = [col for col in df.columns if col.startswith(prefix)]
+    if not embedding_columns:
+        print(f"Aucune colonne ne commence par '{prefix}'.")
+        return {}
+    embedding_dict = {col.replace(prefix, ""): col for col in embedding_columns}
+    return embedding_dict
+
+
 def get_suffix(method_name, params):
     if method_name == "apply_inverse_normal_transform":
         return "Int"
@@ -34,69 +110,10 @@ def get_suffix(method_name, params):
             suffix += "_C"
         return suffix
 
+    elif method_name == "apply_median_polish":
+        return "MedPol"
+
     return ""
-
-
-def apply_transformations(
-    well_em: EmbeddingManager,
-    sequence,  # TODO : type this variable
-    starting_embedding_col: str | None = "Embeddings_Raw",
-) -> EmbeddingManager:
-
-    # Start with the specified initial embedding column
-    current_embedding_col = starting_embedding_col
-    sequence_name = sequence["name"]
-
-    for transformation in sequence["transformations"]:
-        method_name = transformation.get("method")
-        params = transformation.get("params") or {}
-
-        # Generate the suffix for the current transformation
-        suffix = get_suffix(method_name, params)
-        produces_new_embedding = suffix != ""
-        save_embedding_col = (
-            current_embedding_col + "__" + suffix
-            if produces_new_embedding
-            else current_embedding_col
-        )
-
-        # Check if this full transformation suite has already been applied
-        if produces_new_embedding and save_embedding_col in well_em.df.columns:
-            logging.info(
-                f"Seq : '{sequence_name}', '{save_embedding_col}' already exists."
-            )
-            current_embedding_col = save_embedding_col
-            continue
-
-        try:
-            logging.info(
-                f"Seq : '{sequence_name}', applying '{method_name}' with parameters: {params}"  # noqa
-            )
-            method = getattr(well_em, method_name)
-            method_params = {"raw_embedding_col": current_embedding_col, **params}
-            if produces_new_embedding:
-                method_params["save_embedding_col"] = save_embedding_col
-            method(**method_params)
-            current_embedding_col = save_embedding_col or current_embedding_col
-
-        except Exception as e:
-            logging.error(
-                f"Seq : '{sequence_name}', an error occurred while applying '{method_name}': {e}"  # noqa
-            )
-            break
-    return current_embedding_col
-
-
-def create_embedding_dict(df: pd.DataFrame, prefix: str | None = "Embeddings_"):
-    if df.empty:
-        print("La DataFrame est vide.")
-        return {}
-    embedding_columns = [col for col in df.columns if col.startswith(prefix)]
-    if not embedding_columns:
-        print(f"Aucune colonne ne commence par '{prefix}'.")
-        return {}
-    embedding_dict = {col.replace(prefix, ""): col for col in embedding_columns}
-    return embedding_dict
 
 
 def get_method_variations(method):
@@ -141,6 +158,9 @@ def get_method_variations(method):
                             },
                         }
                     )
+    elif method == "apply_median_polish":
+        # No additional parameters are required for median polish.
+        variations.append({"method": method})
     return variations
 
 
@@ -175,6 +195,8 @@ def generate_sequence_name(sequence):
                 method_abbrev += "_N"
             if use_control:
                 method_abbrev += "_C"
+        elif method == "apply_median_polish":
+            method_abbrev = "MedPol"
         name_parts.append(method_abbrev)
     name = "__".join(name_parts)
     return name
@@ -196,29 +218,42 @@ def generate_all_pipelines(
     methods: list[str],
     n_methods_max: int,
     max_combinations: int,
-) -> list:
+) -> list[dict]:
+    """
+    Generate all possible normalization pipelines given a list of methods, the maximum
+    number of methods per sequence, and the maximum number of combinations to return.
 
-    # Generate and evaluate pipelines
+    Args:
+        methods (List[str]): List of normalization methods.
+        n_methods_max (int): Maximum number of methods per pipeline sequence.
+        max_combinations (int): Maximum number of pipelines to generate.
+
+    Returns:
+        List[Dict]: List of pipeline sequences. Each sequence is a dictionary with a
+                    "name" and a list of "transformations".
+    """
+    # Generate all method sequences
     method_sequences = generate_sequences(methods, n_methods_max)
     transformation_sequences = []
 
     for method_sequence in method_sequences:
-        method_variations_list = []
-        for method in method_sequence:
-            method_variations_list.append(get_method_variations(method))
-        sequence_variations = itertools.product(*method_variations_list)
-        for seq_variation in sequence_variations:
-            name = generate_sequence_name(seq_variation)
+        # Get all variations for each method in the sequence
+        method_variations = [
+            get_method_variations(method) for method in method_sequence
+        ]
+        # Compute all combinations of the method variations
+        for seq_variation in itertools.product(*method_variations):
+            # Generate a name for the sequence
+            sequence_name = generate_sequence_name(seq_variation)
+            # Create the sequence dictionary
             sequence = {
-                "name": name,
-                "transformations": [dict(t) for t in seq_variation],
+                "name": sequence_name,
+                "transformations": [dict(variation) for variation in seq_variation],
             }
             transformation_sequences.append(sequence)
 
-    if len(transformation_sequences) >= max_combinations:
-        transformation_sequences = transformation_sequences[:max_combinations]
-
-    return transformation_sequences
+    # Limit the number of generated sequences
+    return transformation_sequences[:max_combinations]
 
 
 def cleanup_large_pipelines(well_em: EmbeddingManager, n: int | None = 2):

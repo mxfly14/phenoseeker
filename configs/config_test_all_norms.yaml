@@ -1,20 +1,24 @@
 paths:
-  metadata_path: '/home/maxime/synrepos/phenospace/jump_pl/images_embeddings/ResNet50/metadata/load_wells/load_wells.parquet'
-  exp_folder: "/home/maxime/synrepos/phenoseeker/tmp/resnet"
-  exp_name: "ref_before_refactor"
+  metadata_path: '/projects/synsight/data/jump_embeddings/wells_embeddings/resnet50/metadata_resnet50_mean.parquet'
+  embeddings_path: '/projects/synsight/data/jump_embeddings/wells_embeddings/resnet50/embeddings_resnet50_mean.npy'
+  exp_folder: "/projects/synsight/repos/phenoseeker/tmp/resnet"
+  exp_name: "new_balance_selection_all_med_pol_mean"
 
 methods:
   - apply_inverse_normal_transform
   - apply_rescale
   - apply_spherizing_transform
   - apply_robust_Z_score
+  - apply_median_polish
 
-max_combinations: 3
-n_methods_max: 1 # Should not be higther than n_methods
+max_combinations: 100000
+n_methods_max: 4 # Should not be higther than n_methods
+# If not specified or all, the whole JUMP will be used
 
-selected_plates: # If not specified or all, the whole JUMP will be used
-  - EC000010
-  - GR00004379
-  - A1170386
+#  or balance_selection, a balanced selection to test all normalisations
+#selected_plates: 
+#  - EC000010
+#  - GR00004379
+#  - A1170386
 
-#selected_plates: "all"
+selected_plates: "balance_selection"

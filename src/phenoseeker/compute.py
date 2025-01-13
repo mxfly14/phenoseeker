@@ -120,6 +120,52 @@ def compute_reduce_center(
     return center_array, reduce_array
 
 
+def calculate_map_efficient(
+    dist_matrix: np.ndarray,
+    labels: np.ndarray,
+    indices_with_query_label: np.ndarray,
+    sorted_indices: np.ndarray,
+    query_label: str,
+) -> float:
+    """
+    Efficiently calculate mean Average Precision (mAP) for a query label.
+
+    Args:
+        dist_matrix (np.ndarray): Distance matrix.
+        labels (np.ndarray): Labels for all elements.
+        indices_with_query_label (np.ndarray): Indices of elements with the query label.
+        sorted_indices (np.ndarray): Precomputed sorted indices.
+        query_label (str): The label to compute mAP for.
+
+    Returns:
+        float: Mean Average Precision.
+    """
+    mAP = 0.0
+    count = len(indices_with_query_label)
+
+    for i, query_idx in enumerate(indices_with_query_label):
+        mask = np.ones(len(labels), dtype=bool)
+        mask[query_idx] = False
+
+        filtered_indices = sorted_indices[i][mask[sorted_indices[i]]]
+        num_positive = count - 1
+        tp = 0
+        ap = 0.0
+
+        for rank, index in enumerate(filtered_indices):
+            if labels[index] == query_label:
+                tp += 1
+                precision_at_k = tp / (rank + 1)
+                recall_at_k = tp / num_positive
+                recall_at_k_prev = (tp - 1) / num_positive if tp > 1 else 0.0
+                ap += (recall_at_k - recall_at_k_prev) * precision_at_k
+
+        mAP += ap
+
+    mAP /= count
+    return mAP
+
+
 def calculate_map(
     dist_matrix: np.ndarray,
     labels: np.ndarray,

@@ -1,4 +1,5 @@
 import logging
+import numpy as np
 import shutil
 import warnings
 import pandas as pd
@@ -60,27 +61,27 @@ def setup_environment(config_file_path: Path) -> tuple[dict, Path]:
     return config, results_folder
 
 
-def preprocess_embeddings(config) -> EmbeddingManager:
+def preprocess_embeddings(config: dict) -> EmbeddingManager:
 
     metadata_path = Path(config["paths"]["metadata_path"])
+    embeddings_path = Path(config["paths"]["embeddings_path"])
+
     well_em = EmbeddingManager(metadata_path, entity="well")
+    well_em.load("Embeddings_Raw", embeddings_path)
 
     selected_plates = config.get("selected_plates", "all")
-    if selected_plates == "all":
-        selected_plates = well_em.df["Metadata_Plate"].unique()
 
-    selected_plates = [
-        item for item in selected_plates if item not in well_em.no_dmso_plates
-    ]
+    if selected_plates == "balance_selection":
+        selected_plates = pd.read_json(
+            "/projects/synsight/repos/phenoseeker/scripts/balanced_plates.json"
+        )["Metadata_Plate"].to_list()
+        logging.info(f"len(selected_plates) {len(selected_plates)}")
+        well_em = well_em.filter_and_instantiate(Metadata_Plate=selected_plates)
+    elif selected_plates != "all":
+        well_em = well_em.filter_and_instantiate(Metadata_Plate=selected_plates)
 
-    well_em.df = well_em.df[well_em.df["Metadata_Plate"].isin(selected_plates)]
-
-    well_em.df = well_em.df[
-        well_em.df["Metadata_JCP2022"].isin(well_em.JCP_ID_controls)
-    ]
-
-    well_em.load("path_embedding", vectors_column="Embeddings_Raw")
-    well_em.remove_features(threshold=10e-5, vectors_column="Embeddings_Raw")
+    well_em = well_em.filter_and_instantiate(Metadata_JCP2022=well_em.JCP_ID_controls)
+    well_em.remove_features(embedding_name="Embeddings_Raw", threshold=10e-7)
 
     logging.info("Embeddings loaded and filtered.")
     logging.info(f"We have an {well_em}.")
@@ -88,38 +89,69 @@ def preprocess_embeddings(config) -> EmbeddingManager:
     return well_em
 
 
-def evaluate_pipeline(sequence, well_em, results_dfs, current, total) -> dict:
-    """Apply transformations and evaluate the pipeline."""
+def evaluate_pipeline(
+    well_em: EmbeddingManager,
+    sequence: dict,
+    current: int,
+    total: int,
+    results_dfs: dict,
+) -> dict:
+    """
+    Apply transformations and evaluate the pipeline.
+
+    Args:
+        well_em (EmbeddingManager): Instance of EmbeddingManager.
+        sequence (dict): Pipeline sequence with transformations.
+        current (int): Current pipeline index in evaluation.
+        total (int): Total number of pipelines.
+        results_dfs (dict): Dictionary to store evaluation results.
+
+    Returns:
+        dict: Updated results_dfs with evaluation results for the pipeline.
+    """
     logging.info(f"Evaluating pipeline {current}/{total}: {sequence['name']}")
+
     try:
-        col_name = apply_transformations(well_em, sequence)
+        # Apply transformations to the embeddings
+        current_embedding_name = apply_transformations(well_em, sequence)
+
+        # Filter out DMSO controls for compound-level evaluation
         compounds_em = well_em.filter_and_instantiate(Metadata_Is_dmso=False)
+
+        # Compute MAPs for different labels
         maps_jcp2022 = compounds_em.compute_maps(
             labels_column="Metadata_JCP2022",
-            vectors_columns={f'{sequence["name"]}': col_name},
+            embeddings_names=current_embedding_name,
+            dtype=np.float16,
         )
         del compounds_em
+
         # maps_batch = well_em.compute_maps(
         #    labels_column="Metadata_Batch",
-        #    vectors_columns={f'{sequence["name"]}': col_name},
+        #    embeddings_names=current_embedding_name,
+        #    dtype=np.float16,
         # )
-        maps_source = well_em.compute_maps(
-            labels_column="Metadata_Source",
-            vectors_columns={f'{sequence["name"]}': col_name},
+        # maps_source = well_em.compute_maps(
+        #    labels_column="Metadata_Source",
+        #    embeddings_names=current_embedding_name,
+        #    dtype=np.float16,
+        # )
+        maps_plate = well_em.compute_maps(
+            labels_column="Metadata_Plate",
+            embeddings_names=current_embedding_name,
+            dtype=np.float16,
         )
-        # maps_plate = well_em.compute_maps(
-        #    labels_column="Metadata_Plate",
-        #    vectors_columns={f'{sequence["name"]}': col_name},
-        # )
 
+        # Append results to the corresponding dataframes
         results_dfs["jcp2022"].append(maps_jcp2022)
         # results_dfs["batch"].append(maps_batch)
-        results_dfs["source"].append(maps_source)
-        # results_dfs["plate"].append(maps_plate)
+        # results_dfs["source"].append(maps_source)
+        results_dfs["plate"].append(maps_plate)
 
         logging.info(f"Pipeline '{sequence['name']}' evaluated successfully.")
     except Exception as e:
         logging.error(f"Error in pipeline {sequence['name']}: {e}")
+
     return results_dfs
 
 
@@ -152,26 +184,26 @@ def main():
     # Initialize results DataFrames
     results_dfs = {
         "jcp2022": [],
-        # "batch": [],
-        "source": [],
-        # "plate": [],
+        #    "batch": [],
+        # "source": [],
+        "plate": [],
     }
 
     results_dfs = evaluate_pipeline(
-        {"name": "Raw", "transformations": []},
         well_em,
-        results_dfs,
+        {"name": "Raw", "transformations": []},
         1,
         len(transformation_sequences) + 1,
+        results_dfs,
     )
 
     for idx, sequence in enumerate(transformation_sequences, start=2):
         results_dfs = evaluate_pipeline(
-            sequence,
             well_em,
-            results_dfs,
+            sequence,
             idx,
             len(transformation_sequences) + 1,
+            results_dfs,
         )
         well_em.distance_matrices = {}
         free_memory = check_free_memory()
