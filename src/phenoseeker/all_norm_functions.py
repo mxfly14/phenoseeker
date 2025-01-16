@@ -210,6 +210,8 @@ def generate_sequences(methods: list[str], n_methods_max: int) -> list:
         for perm in permutations:
             if "apply_Z_score" in perm and "apply_robust_Z_score" in perm:
                 continue
+            if "apply_inverse_normal_transform" in perm and "apply_rescale" in perm:
+                continue
             method_sequences.append(perm)
     return method_sequences
 
@@ -250,6 +252,8 @@ def generate_all_pipelines(
                 "name": sequence_name,
                 "transformations": [dict(variation) for variation in seq_variation],
             }
+            if "_N" in sequence_name and "Res" in sequence_name:
+                continue
             transformation_sequences.append(sequence)
 
     # Limit the number of generated sequences
