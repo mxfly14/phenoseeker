@@ -210,8 +210,8 @@ def main():
         logging.info(
             f"Free memory after pipeline {idx}/{len(transformation_sequences) + 1}: {free_memory:.2f} GB"  # NOQA
         )
-        if free_memory < 50:  # Less that 50GB of available RAM
-            cleanup_large_pipelines(well_em, 2)
+        if free_memory < 100:  # Less that 50GB of available RAM
+            cleanup_large_pipelines(well_em, 1)
 
     for name, dfs in results_dfs.items():
         df = pd.concat(dfs, ignore_index=False, axis=1)
