@@ -1,15 +1,16 @@
 paths:
-  metadata_path: '/projects/synsight/data/jump_embeddings/wells_embeddings/dinov2_g/metadata_dinov2_g.parquet'
-  embeddings_path: '/projects/synsight/data/jump_embeddings/wells_embeddings/dinov2_g/embeddings_dinov2_g.npy'
-  exp_folder: "/projects/synsight/repos/phenoseeker/tmp/dinov2_g"
+  metadata_path: '/projects/synsight/data/jump_embeddings/wells_embeddings/openphenom/metadata_openphenom.parquet'
+  embeddings_path: '/projects/synsight/data/jump_embeddings/wells_embeddings/openphenom/embeddings_openphenom.npy'
+  exp_folder: "/projects/synsight/repos/phenoseeker/tmp/openphenom"
   exp_name: "48_plates_4_combi"
+  selected_plates: "/projects/synsight/repos/phenoseeker/scripts/balanced_plates.json"
 
 methods:
   - apply_inverse_normal_transform
   - apply_rescale
   - apply_spherizing_transform
   - apply_robust_Z_score
-  - apply_median_polish
+#  - apply_median_polish
 
 max_combinations: 100000
 n_methods_max: 4 # Should not be higther than n_methods
