@@ -19,7 +19,7 @@ torch = "^2.5.1"
 torchvision = "^0.20.1"
 pillow = "^11.0.0"
 tqdm = "^4.67.1"
-numpy = "^2.2.1"
+numpy = ">=1.18,<1.24"
 pathlib = "^1.0.1"
 joblib = "^1.4.2"
 scipy = "^1.14.1"
@@ -29,6 +29,8 @@ scikit-learn = "^1.6.0"
 umap = "^0.1.1"
 rdkit = "^2024.9.1"
 tqdm-joblib = "^0.0.4"
+numba = "^0.56.0"
+umap-learn = "^0.5.7"
 
 
 [build-system]

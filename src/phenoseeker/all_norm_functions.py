@@ -121,9 +121,9 @@ def get_method_variations(method):
     if method == "apply_inverse_normal_transform":
         variations.append({"method": method})
     elif method == "apply_robust_Z_score":
-        center_by_options = ["mean", "median"]
-        reduce_by_options = ["iqrs", "std"]
-        use_control_options = [True, False]
+        center_by_options = ["mean"]  # , "median"]
+        reduce_by_options = ["std"]  # , "iqrs"]  # TODO
+        use_control_options = [True]  # , False] # TODO
         for center_by in center_by_options:
             for reduce_by in reduce_by_options:
                 for use_control in use_control_options:
@@ -138,11 +138,11 @@ def get_method_variations(method):
                         }
                     )
     elif method == "apply_rescale":
-        scale_options = ["0-1", "-1-1"]
+        scale_options = ["-1-1", "0-1"]
         for scale in scale_options:
             variations.append({"method": method, "params": {"scale": scale}})
     elif method == "apply_spherizing_transform":
-        spherizing_methods = ["PCA", "ZCA", "ZCA-cor"]
+        spherizing_methods = ["ZCA", "ZCA-cor"]  # , "PCA", "PCA-cor"]
         norm_embeddings_options = [True, False]
         use_control_options = [True, False]
         for s_method in spherizing_methods:

@@ -73,7 +73,7 @@ def preprocess_embeddings(config: dict) -> EmbeddingManager:
 
     if selected_plates == "balance_selection":
         selected_plates = pd.read_json(
-            "/home/maxime/synrepos/phenoseeker/scripts/balanced_plates.json"
+            "/home/maxime/synrepos/phenoseeker/scripts/balanced_plates_388_plate_2.json"
         )["Metadata_Plate"].to_list()
         logging.info(f"len(selected_plates) {len(selected_plates)}")
         well_em = well_em.filter_and_instantiate(Metadata_Plate=selected_plates)
