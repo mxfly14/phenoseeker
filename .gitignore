@@ -172,3 +172,5 @@ cython_debug/
 
 # Custom
 tmp/
+tmp_2/
+data/

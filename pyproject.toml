@@ -31,6 +31,7 @@ rdkit = "^2024.9.1"
 tqdm-joblib = "^0.0.4"
 numba = "^0.56.0"
 umap-learn = "^0.5.7"
+requests = "^2.32.3"
 
 
 [build-system]
