@@ -9,6 +9,7 @@ from joblib import Parallel, delayed
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.metrics import pairwise_distances
+from scipy.cluster.hierarchy import dendrogram, linkage, fcluster
 import umap
 import warnings
 
@@ -95,7 +96,7 @@ class EmbeddingManager:
                     "Metadata_Well"
                 ].apply(lambda x: pd.Series(self._well_to_row_col(x)))
 
-        self.convert_row_col_to_number()
+            self.convert_row_col_to_number()
 
     def __len__(self) -> int:
         return len(self.df)
@@ -676,20 +677,128 @@ class EmbeddingManager:
 
         return lisi_df
 
+    def plot_distance_matrix(
+        self,
+        embedding_name: str,
+        distance: str = "cosine",
+        sort_by: str | None = None,
+        label_by: str | None = None,
+        cmap: str = "coolwarm",
+        n_jobs: int = -1,
+        dtype: type = np.float32,
+        fontsize: int = 8,
+        similarity: bool = False,
+    ) -> None:
+        """
+        Plot the distance or similarity matrix for the specified embedding.
+
+        Args:
+            embedding_name (str): Name of the embedding to plot distances for.
+            distance (str, optional): Distance metric used to compute the matrix.
+                Defaults to 'cosine'.
+            sort_by (str, optional): Column name to sort the samples by.
+                Defaults to None.
+            label_by (str, optional): Column name to use for labels.
+                Defaults to None.
+            cmap (str, optional): Colormap for the heatmap. Defaults to 'coolwarm'.
+            n_jobs (int, optional): Number of parallel jobs for distance computation.
+                Defaults to -1.
+            dtype (type, optional): Data type for the embeddings.
+                Defaults to np.float32.
+            fontsize (int, optional): Font size for the annotations. Defaults to 8.
+            similarity (bool, optional): If True, plot similarity instead of distance.
+                Defaults to False.
+        """
+        # Check if the matrix exists, otherwise compute it
+        matrix_key = f"{'cosine_similarity' if similarity else distance + '_distance'}_matrix_{embedding_name}"  # noqa
+        if matrix_key not in self.distance_matrices:
+            print(f"Matrix '{matrix_key}' not found. Computing it now...")
+            self.compute_distance_matrix(
+                embedding_name, distance, n_jobs, dtype, similarity
+            )
+
+        # Retrieve the matrix
+        matrix = self.distance_matrices[matrix_key]
+
+        # Sort the matrix if sort_by is provided
+        if sort_by is not None:
+            if sort_by in self.df.columns:
+                sorted_df = self.df.sort_values(by=sort_by)
+                matrix = matrix[sorted_df.index][:, sorted_df.index]
+            else:
+                print(f"Warning: {sort_by} is not a valid column. No sorting applied.")
+                sorted_df = self.df
+        else:
+            sorted_df = self.df
+
+        # Determine labels
+        if label_by is not None:
+            if label_by in self.df.columns:
+                ids = sorted_df[label_by].values
+            else:
+                print(
+                    f"Warning: {label_by} is not a valid column. Using index as labels."
+                )
+                ids = sorted_df.index
+        else:
+            ids = sorted_df.index
+
+        # Plot the heatmap
+        _, ax = plt.subplots(figsize=(10, 8))
+        cax = ax.imshow(matrix, cmap=cmap, interpolation="none")
+        ax.set_title(
+            f"{'Cosine Similarity' if similarity else distance.capitalize()} Matrix for {embedding_name}",  # noqa
+            fontsize=14,
+        )
+        ax.set_xticks(range(len(ids)))
+        ax.set_yticks(range(len(ids)))
+        ax.set_xticklabels(ids, rotation=90, fontsize=fontsize)
+        ax.set_yticklabels(ids, fontsize=fontsize)
+
+        # Remove white lines between pixels
+        ax.set_xticks([], minor=True)
+        ax.set_yticks([], minor=True)
+        ax.grid(False)
+
+        # Add values in the cells
+        for i in range(matrix.shape[0]):
+            for j in range(matrix.shape[1]):
+                value = f"{matrix[i, j]:.2f}"  # Format to 2 decimal places
+                ax.text(
+                    j,
+                    i,
+                    value,
+                    ha="center",
+                    va="center",
+                    fontsize=fontsize,
+                    color="white",
+                )
+
+        # Add a color bar
+        plt.colorbar(cax, ax=ax)
+
+        plt.tight_layout()
+        plt.show()
+
     def compute_distance_matrix(
         self,
         embedding_name: str,
         distance: str | None = "cosine",
         n_jobs: int | None = -1,
         dtype: type | None = np.float32,
+        similarity: bool | None = False,
     ) -> None:
         """
-        Compute a distance matrix for the specified embedding.
+        Compute a distance or similarity matrix for the specified embedding.
 
         Args:
             embedding_name (str): Name of the embedding to compute distances for.
             distance (str, optional): Distance metric to use. Defaults to 'cosine'.
             n_jobs (int, optional): Number of parallel jobs. Defaults to -1.
+            dtype (type, optional): Data type for the embeddings.
+                Defaults to np.float32.
+            similarity (bool, optional): If True, compute similarity instead of
+                distance. Defaults to False.
         """
         valid_distances = [
             "euclidean",
@@ -709,14 +818,73 @@ class EmbeddingManager:
         if embedding_name not in self.embeddings:
             raise ValueError(f"Embedding '{embedding_name}' not found.")
 
-        embeddings = self.embeddings[embedding_name]
-        distances = pairwise_distances(
-            embeddings, metric=distance, n_jobs=n_jobs
-        ).astype(dtype)
+        embeddings = self.embeddings[embedding_name].astype(dtype)
+        distances = pairwise_distances(embeddings, metric=distance, n_jobs=n_jobs)
 
-        self.distance_matrices[f"{distance}_distance_matrix_{embedding_name}"] = (
-            distances
+        if similarity and distance == "cosine":
+            # Convert cosine distance to cosine similarity
+            similarity_matrix = 1 - distances
+            matrix_key = f"cosine_similarity_matrix_{embedding_name}"
+            self.distance_matrices[matrix_key] = similarity_matrix
+        else:
+            matrix_key = f"{distance}_distance_matrix_{embedding_name}"
+            self.distance_matrices[matrix_key] = distances
+
+    def hierarchical_clustering_and_visualization(
+        self,
+        embedding_name: str,
+        distance: str = "cosine",
+        threshold: float = 0.5,
+        similarity: bool = True,
+    ):
+        """
+        Perform hierarchical clustering on molecules and visualize the results.
+
+        Args:
+            embedding_name (str): Name of the embedding to use.
+            distance (str, optional): Distance metric used to compute the matrix.
+                Defaults to 'cosine'.
+            threshold (float): Threshold to determine clusters from the dendrogram.
+            similarity (bool, optional): If True, use similarity matrix instead of
+                distance. Defaults to True.
+        """
+        # Check if the matrix exists, otherwise compute it
+        matrix_key = f"{'cosine_similarity' if similarity else distance + '_distance'}_matrix_{embedding_name}"  # noqa
+        if matrix_key not in self.distance_matrices:
+            print(f"Matrix '{matrix_key}' not found. Computing it now...")
+            self.compute_distance_matrix(
+                embedding_name, distance, similarity=similarity
+            )
+
+        # Retrieve the matrix
+        matrix = self.distance_matrices[matrix_key]
+
+        # Convertir la matrice de similarité en matrice de dissimilarité si nécessaire
+        if similarity:
+            dissimilarity = 1 - matrix
+        else:
+            dissimilarity = matrix
+
+        # Créer un linkage pour le clustering hiérarchique
+        linkage_matrix = linkage(dissimilarity, method="average")
+
+        # Afficher le dendrogramme
+        plt.figure(figsize=(10, 7))
+        dendrogram(
+            linkage_matrix,
+            labels=self.df["Metadata_Molecule_ID"].values,
+            leaf_rotation=90,
         )
+        plt.title("Dendrogramme de clustering hiérarchique")
+        plt.xlabel("Molécules")
+        plt.ylabel("Distance")
+        plt.axhline(y=threshold, color="r", linestyle="--", label=f"Seuil {threshold}")
+        plt.legend()
+        plt.show()
+
+        # Déterminer les clusters à partir du seuil
+        clusters = fcluster(linkage_matrix, t=threshold, criterion="distance")
+        self.df["Cluster"] = clusters
 
     def compute_maps(
         self,
@@ -885,15 +1053,28 @@ class EmbeddingManager:
         Returns:
             EmbeddingManager: A new instance of the class with filtered data and
             embeddings.
+
+        Raises:
+            ValueError: If any filter key is not a column in the DataFrame.
         """
+        # Validate filter criteria keys
+        for key in filter_criteria.keys():
+            if key not in self.df.columns:
+                raise ValueError(
+                    f"Filter key '{key}' is not a column in the DataFrame."
+                )
+
         # Filter the DataFrame based on provided criteria
         filtered_df = self.df
         for key, values in filter_criteria.items():
-            if key in filtered_df.columns:
-                if isinstance(values, list):
-                    filtered_df = filtered_df[filtered_df[key].isin(values)]
-                else:
-                    filtered_df = filtered_df[filtered_df[key] == values]
+            if isinstance(values, list):
+                filtered_df = filtered_df[filtered_df[key].isin(values)]
+            else:
+                filtered_df = filtered_df[filtered_df[key] == values]
+
+        # Check if the filtered DataFrame is empty
+        if filtered_df.empty:
+            raise ValueError("No data matches the filter criteria.")
 
         # Filter the embeddings based on the filtered DataFrame indices
         filtered_indices = filtered_df.index
@@ -926,7 +1107,7 @@ class EmbeddingManager:
         Create a new instance of the class with a grouped DataFrame and embeddings.
 
         Args:
-            group_by (str): The column to group by ('Metadata_Well' or 'Metadata_InChI')
+            group_by (str): The entity to group by ('well' or 'compound')
             embeddings_name (str): Name of the embeddings to group.
             new_embeddings_name (str): Name for the new aggregated embeddings.
             cols_to_keep (list[str], optional): List of columns to keep in the resulting
@@ -946,7 +1127,12 @@ class EmbeddingManager:
             )
 
         if group_by == "well":
-            group_by_columns = ["Metadata_Source", "Metadata_Plate", "Metadata_Well"]
+            group_by_columns = [
+                "Metadata_Source",
+                "Metadata_Plate",
+                "Metadata_Row",
+                "Metadata_Col",
+            ]
             if cols_to_keep is None:
                 cols_to_keep = [
                     "Metadata_Source",
@@ -970,7 +1156,9 @@ class EmbeddingManager:
 
         embeddings = self.embeddings[embeddings_name]
 
-        def aggregate_group(group_indices):
+        def aggregate_group(
+            group_indices,
+        ):  # TODO being able to aggregate several embeddings
             group_vectors = embeddings[group_indices]
             if aggregation == "mean":
                 return group_vectors.mean(axis=0)
@@ -985,7 +1173,7 @@ class EmbeddingManager:
         aggregated_embeddings = np.array(
             Parallel(n_jobs=n_jobs)(
                 delayed(aggregate_group)(grouped_indices[group])
-                for group in grouped.groups
+                for group in tqdm(grouped.groups)
             )
         )
 
