@@ -27,7 +27,6 @@ from .compute import (
     calculate_statistics,
     calculate_lisi_score,
     calculate_map_efficient,
-    #    calculate_maps,
 )
 from .norm_functions import (
     inverse_normal_transform,
@@ -962,7 +961,6 @@ class EmbeddingManager:
                     dist_matrix[indices_with_query_label], axis=1
                 )
                 mAP = calculate_map_efficient(
-                    dist_matrix,
                     labels,
                     indices_with_query_label,
                     sorted_indices,
@@ -975,7 +973,6 @@ class EmbeddingManager:
                     np.random.shuffle(random_labels)
                     random_indices = np.where(random_labels == query_label)[0]
                     random_map = calculate_map_efficient(
-                        dist_matrix,
                         random_labels,
                         random_indices,
                         sorted_indices,

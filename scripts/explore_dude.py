@@ -99,36 +99,30 @@ df_jump.dropna(subset="Fps", inplace=True)
 
 list_of_fps_jump = df_jump["Fps"].tolist()
 
-unique_smiles = set()
-for key, df in tqdm(data_dict.items()):
-    unique_smiles.update(df["smiles"].unique())
-
-print(f"Nombre de molécules uniques trouvées : {len(unique_smiles)}")
-
-# --- 2. Calcul du meilleur voisin pour chaque molécule unique ---
-
-list_of_fps_jump = df_jump["Fps"].tolist()
-
 smiles_to_best_match = {}
-
-for query_smiles in tqdm(unique_smiles, desc="Processing unique smiles"):
-    similarities = compute_similarity(query_smiles, list_of_fps_jump)
-    similarities = np.array(similarities)
-
-    best_index = np.argmax(similarities)
-    best_similarity = similarities[best_index]
-    best_jcp_id = df_jump.iloc[best_index]["Metadata_JCP2022"]
-
-    smiles_to_best_match[query_smiles] = (best_jcp_id, best_similarity)
-
-# --- 3. Réaffecter les informations dans chaque DataFrame de data_dict ---
-
 for key, df in tqdm(data_dict.items()):
-    print(f"\n📂 {key} - Ajout des colonnes 'closest_jcp' et 'tanimoto_similarity'")
-
-    df["closest_jcp"] = df["smiles"].apply(lambda s: smiles_to_best_match[s][0])
-    df["tanimoto_similarity"] = df["smiles"].apply(lambda s: smiles_to_best_match[s][1])
-
     output_filename = f"{base_path}/parquets_files/jump_{key}.parquet"
-    df.to_parquet(output_filename, index=False)
-    print(f"✅ {output_filename} sauvegardé.")
+
+    if not os.path.exists(output_filename):
+        smiles = df["smiles"].to_list()
+        for query_smiles in tqdm(smiles, desc=f"Processing smiles for {key}"):
+            try:
+                similarities = compute_similarity(query_smiles, list_of_fps_jump)
+                similarities = np.array(similarities)
+
+                best_index = np.argmax(similarities)
+                best_similarity = similarities[best_index]
+                best_jcp_id = df_jump.iloc[best_index]["Metadata_JCP2022"]
+            except Exception as e:
+                print(f"failed {e} for molecule : {query_smiles}")
+                best_jcp_id = "JCP_UNKNOW"
+                best_similarity = 0
+            smiles_to_best_match[query_smiles] = (best_jcp_id, best_similarity)
+        df["id_dude"] = df["id_dude"].astype(str)
+        df["closest_jcp"] = df["smiles"].apply(lambda s: smiles_to_best_match[s][0])
+        df["tanimoto_similarity"] = df["smiles"].apply(
+            lambda s: smiles_to_best_match[s][1]
+        )
+
+        df.to_parquet(output_filename, index=False)
+        print(f"✅ {output_filename} sauvegardé.")
