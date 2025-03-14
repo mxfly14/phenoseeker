@@ -6,7 +6,7 @@ import os
 import numpy as np
 
 df_jump = pd.read_parquet(
-    "/projects/synsight/data/openphenom/norm_2_compounds_embeddings.parquet"
+    "/home/maxime/data/jump_embeddings/dinov2_g/compounds/metadata.parquet"
 )
 
 mg = AllChem.GetMorganGenerator(radius=2, fpSize=2048, includeChirality=False)
@@ -99,36 +99,65 @@ df_jump.dropna(subset="Fps", inplace=True)
 
 list_of_fps_jump = df_jump["Fps"].tolist()
 
+# --- 1. Collecter les molécules uniques ---
 unique_smiles = set()
-for key, df in tqdm(data_dict.items()):
+for key, df in tqdm(data_dict.items(), desc="Collecting unique smiles"):
     unique_smiles.update(df["smiles"].unique())
 
 print(f"Nombre de molécules uniques trouvées : {len(unique_smiles)}")
 
 # --- 2. Calcul du meilleur voisin pour chaque molécule unique ---
-
 list_of_fps_jump = df_jump["Fps"].tolist()
-
-smiles_to_best_match = {}
-
-for query_smiles in tqdm(unique_smiles, desc="Processing unique smiles"):
-    similarities = compute_similarity(query_smiles, list_of_fps_jump)
-    similarities = np.array(similarities)
-
-    best_index = np.argmax(similarities)
-    best_similarity = similarities[best_index]
-    best_jcp_id = df_jump.iloc[best_index]["Metadata_JCP2022"]
-
-    smiles_to_best_match[query_smiles] = (best_jcp_id, best_similarity)
 
 # --- 3. Réaffecter les informations dans chaque DataFrame de data_dict ---
 
-for key, df in tqdm(data_dict.items()):
+# for key in tqdm(reversed(list(data_dict.keys())), desc="Processing each key"):
+for key in tqdm(data_dict.keys(), desc="Processing each key"):
+    df = data_dict[key]
+    output_filename = f"{base_path}/parquets_files/jump_{key}.parquet"
+
+    # Vérifier si le fichier existe déjà
+    if os.path.exists(output_filename):
+        print(f"📂 {key} - Fichier {output_filename} existe déjà. Sauter cette clé.")
+        continue
+    # Créer un fichier Parquet vide ou avec des données minimales
+    try:
+        empty_df = pd.DataFrame(columns=df.columns)
+        empty_df.to_parquet(output_filename, index=False)
+        print(f"📂 {key} - Fichier Parquet initialisé : {output_filename}")
+    except Exception as e:
+        print(
+            f"Erreur lors de l'initialisation du fichier Parquet pour la clé {key}: {e}"
+        )
+        continue
+
     print(f"\n📂 {key} - Ajout des colonnes 'closest_jcp' et 'tanimoto_similarity'")
 
-    df["closest_jcp"] = df["smiles"].apply(lambda s: smiles_to_best_match[s][0])
-    df["tanimoto_similarity"] = df["smiles"].apply(lambda s: smiles_to_best_match[s][1])
+    smiles_to_best_match = {}
+    try:
+        for query_smiles in tqdm(
+            df["smiles"].unique(), desc=f"Processing smiles for {key}"
+        ):
+            similarities = compute_similarity(query_smiles, list_of_fps_jump)
+            similarities = np.array(similarities)
 
-    output_filename = f"{base_path}/parquets_files/jump_{key}.parquet"
-    df.to_parquet(output_filename, index=False)
-    print(f"✅ {output_filename} sauvegardé.")
+            best_index = np.argmax(similarities)
+            best_similarity = similarities[best_index]
+            best_jcp_id = df_jump.iloc[best_index]["Metadata_JCP2022"]
+
+            smiles_to_best_match[query_smiles] = (best_jcp_id, best_similarity)
+
+        df["closest_jcp"] = df["smiles"].apply(lambda s: smiles_to_best_match[s][0])
+        df["tanimoto_similarity"] = df["smiles"].apply(
+            lambda s: smiles_to_best_match[s][1]
+        )
+
+        # Vérifier et convertir les types de données si nécessaire
+        for col in df.columns:
+            if df[col].dtype == "object":
+                df[col] = df[col].astype(str)
+
+        df.to_parquet(output_filename, index=False)
+        print(f"✅ {output_filename} sauvegardé.")
+    except Exception as e:
+        print(f"Erreur lors du traitement de la clé {key}: {e}")
