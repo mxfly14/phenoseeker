@@ -121,7 +121,6 @@ def compute_reduce_center(
 
 
 def calculate_map_efficient(
-    dist_matrix: np.ndarray,
     labels: np.ndarray,
     indices_with_query_label: np.ndarray,
     sorted_indices: np.ndarray,
@@ -164,81 +163,3 @@ def calculate_map_efficient(
 
     mAP /= count
     return mAP
-
-
-def calculate_map(
-    dist_matrix: np.ndarray,
-    labels: np.ndarray,
-    indices_with_query_label: np.ndarray,
-    query_label: str,
-) -> float:
-    """
-    Calculate the mean Average Precision (mAP) for the given labels.
-    """
-    mAP = 0.0
-    count = len(indices_with_query_label)
-
-    for i in indices_with_query_label:
-        mask = np.ones(len(labels), dtype=bool)
-        mask[i] = False
-        sorted_indices = np.argsort(dist_matrix[i][mask])
-
-        filtered_indices = np.where(mask)[0][sorted_indices]
-
-        num_positive = count - 1
-        tp = 0
-        ap = 0.0
-
-        for rank, index in enumerate(filtered_indices):
-            if labels[index] == query_label:
-                tp += 1
-                precision_at_k = tp / (rank + 1)
-                recall_at_k = tp / num_positive
-                recall_at_k_prev = (tp - 1) / num_positive if tp > 1 else 0.0
-                ap += (recall_at_k - recall_at_k_prev) * precision_at_k
-        mAP += ap
-
-    mAP /= count
-    return mAP
-
-
-def calculate_maps(
-    dist_matrix: np.ndarray,
-    query_label: str,
-    labels: np.ndarray,
-    random_maps: bool = False,
-) -> tuple[str, int, float | None, float | None]:
-    """
-    Calculate the original and random Mean Average Precision (MAP) for a given label.
-
-    Args:
-        dist_matrix (np.ndarray): Distance matrix between elements.
-        query_label (str): The label to query.
-        labels (np.ndarray): Array of labels for all elements.
-        random_maps (bool): Whether to compute random mAP values.
-
-    Returns:
-        tuple[str, int, Optional[float], Optional[float]]: The query label, count of
-        items with the query label, original MAP value, and random MAP value.
-    """
-    indices_with_query_label = np.where(labels == query_label)[0]
-    count = len(indices_with_query_label)
-
-    if count <= 1:
-        return query_label, count, None, None
-
-    original_map = calculate_map(
-        dist_matrix, labels, indices_with_query_label, query_label
-    )
-
-    random_map = None
-    if random_maps:
-        random_labels = labels.copy()
-        np.random.shuffle(random_labels)
-        indices_with_query_label_random = np.where(random_labels == query_label)[0]
-
-        random_map = calculate_map(
-            dist_matrix, random_labels, indices_with_query_label_random, query_label
-        )
-
-    return query_label, count, original_map, random_map

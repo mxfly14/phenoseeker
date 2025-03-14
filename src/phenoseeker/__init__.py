@@ -14,11 +14,14 @@ from .all_norm_functions import (
 
 from .embedding_manager import EmbeddingManager
 
+from .bioproxy_evaluator import BioproxyEvaluator
+
 __all__ = [
     "load_config",
     "modify_first_layer",
     "MultiChannelImageDataset",
     "EmbeddingManager",
+    "BioproxyEvaluator",
     "create_embedding_dict",
     "apply_transformations",
     "generate_all_pipelines",
