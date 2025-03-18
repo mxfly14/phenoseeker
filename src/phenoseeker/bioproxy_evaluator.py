@@ -2,6 +2,7 @@ from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import numpy as np
 
 from .embedding_manager import EmbeddingManager
 
@@ -18,11 +19,16 @@ class BioproxyEvaluator:
         compounds_metadata: pd.DataFrame | Path,
         embeddings_path: Path,
         screens_folders: dict[str, Path] | None = None,
+        embeddings_name: str = "Embeddings",
+        embeddings_entity: str = "compound",
     ) -> None:
-        self.global_embedding_manager = EmbeddingManager(compounds_metadata, "compound")
-        self.global_embedding_manager.load("Embeddings", embeddings_path)
+        self.global_embedding_manager = EmbeddingManager(
+            compounds_metadata,
+            embeddings_entity,
+        )
+        self.global_embedding_manager.load(embeddings_name, embeddings_path)
         self.screens_data_folders = {
-            "ChemBL": Path("../../../bioproxy/screens_data_chembl"),
+            "ChEMBL": Path("../../../bioproxy/screens_data_chembl"),
             "Curie": Path("../../../bioproxy/screens_data_curie"),
         }
         if screens_folders is not None:
@@ -266,3 +272,43 @@ class BioproxyEvaluator:
         plt.grid(True)
         plt.tight_layout()
         plt.show()
+
+    def load(
+        self,
+        embedding_name: str,
+        embeddings_file: str | Path,
+        metadata_file: str | Path | None = None,
+        dtype: type | None = np.float64,
+    ) -> None:
+        """
+        Load new embeddings into the global manager and update screen
+        managers.
+
+        Args:
+            embedding_name (str): Key for the embeddings.
+            embeddings_file (str | Path): Path to the .npy embeddings file.
+            metadata_file (str | Path | None): Optional metadata file.
+            dtype (type | None): Data type for embeddings.
+                Defaults to np.float64.
+        """
+        self.global_embedding_manager.load(
+            embedding_name, embeddings_file, metadata_file, dtype
+        )
+        global_embeds = self.global_embedding_manager.embeddings[embedding_name]
+        global_df = self.global_embedding_manager.df
+
+        id_to_index = dict(zip(global_df["Metadata_JCP2022"], global_df.index))
+
+        for _, screens in self.screen_embedding_managers.items():
+            for _, manager in screens.items():
+                screen_df = manager.df
+                indices = screen_df["Metadata_JCP2022"].map(id_to_index)
+                if indices.isnull().any():
+                    raise ValueError(
+                        "One or more 'Metadata_JCP2022' ids were not found "
+                        "in the global embeddings."
+                    )
+                indices = indices.astype(int).values
+                manager.embeddings[embedding_name] = global_embeds[indices].astype(
+                    dtype
+                )

@@ -119,28 +119,72 @@ class EmbeddingManager:
     def load(
         self,
         embedding_name: str,
-        file_path: str | Path,
+        embeddings_file: str | Path,
+        metadata_file: str | Path | None = None,
         dtype: type | None = np.float64,
     ) -> None:
         """
-        Load embeddings from a .npy file and store them in the embeddings dictionary.
+        Load embeddings and associated metadata, align and store them in self.embeddings
 
         Args:
-            embedding_name (str): A key to identify the loaded embeddings.
-            file_path (str | Path): Path to the .npy file containing the embeddings.
+            embedding_name (str): Key for the loaded embeddings.
+            embeddings_file (str | Path): Path to the .npy embeddings file.
+            metadata_file (str | Path): Path to the metadata parquet file.
+            dtype (type, optional): Data type for the embeddings. Defaults to np.float64
         """
-        file_path = Path(file_path)
-        if not file_path.exists() or not file_path.suffix == ".npy":
-            raise ValueError("Provided path is not a valid .npy file.")
+        if metadata_file is not None:
+            metadata_file = Path(metadata_file)
+            if metadata_file.suffix != ".parquet":
+                raise ValueError("Provided metadata path is not a valid parquet file.")
+            loaded_metadata = pd.read_parquet(metadata_file)
+        else:
+            loaded_metadata = self.df
 
-        embeddings = np.load(file_path)
+        embeddings_file = Path(embeddings_file)
+        if not embeddings_file.exists() or embeddings_file.suffix != ".npy":
+            raise ValueError("Provided embeddings path is not a valid .npy file.")
+        embeddings = np.load(embeddings_file)
 
-        if embeddings.shape[0] != len(self.df):
-            raise ValueError(
-                f"Number of embeddings ({embeddings.shape[0]}) does not match number of metadata rows ({len(self.df)})."  # noqa
+        # Définir la clé d'unicité selon l'entité
+        if self.entity == "well":
+            key_columns = ["Metadata_Well", "Metadata_Plate", "Metadata_Source"]
+        elif self.entity == "compound":
+            key_columns = ["Metadata_JCP2022"]
+        else:
+            raise ValueError(f"Unknown entity type: {self.entity}")
+
+        # Comparer et aligner les métadonnées
+        merged_metadata = self.df.merge(
+            loaded_metadata, on=key_columns, how="inner", suffixes=("", "_loaded")
+        )
+
+        if len(merged_metadata) != len(self.df):
+            warnings.warn(
+                f"Metadata mismatch: using only {len(merged_metadata)} rows present in both metadata files."  # noqa
+            )
+            self.df = merged_metadata.drop(
+                columns=[
+                    col for col in merged_metadata.columns if col.endswith("_loaded")
+                ]
             )
 
-        self.embeddings[embedding_name] = embeddings.astype(dtype)
+        # Réordonner les embeddings selon la même clé que self.df
+        loaded_metadata["order_key"] = loaded_metadata[key_columns].apply(tuple, axis=1)
+        self.df["order_key"] = self.df[key_columns].apply(tuple, axis=1)
+
+        reorder_index = (
+            self.df["order_key"]
+            .map({k: i for i, k in enumerate(loaded_metadata["order_key"])})
+            .values
+        )
+
+        # Réordonner les embeddings
+        reordered_embeddings = embeddings[reorder_index.astype(int)]
+
+        self.embeddings[embedding_name] = reordered_embeddings.astype(dtype)
+
+        # Nettoyer la colonne temporaire
+        self.df.drop(columns=["order_key"], inplace=True)
 
     def get_embeddings(self, embedding_name: str) -> np.ndarray:
         """
