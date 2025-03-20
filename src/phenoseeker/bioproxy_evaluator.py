@@ -18,7 +18,7 @@ class BioproxyEvaluator:
         self,
         compounds_metadata: pd.DataFrame | Path,
         embeddings_path: Path,
-        screens_folders: dict[str, Path] | None = None,
+        screens_folders: dict[str, Path],
         embeddings_name: str = "Embeddings",
         embeddings_entity: str = "compound",
     ) -> None:
@@ -27,12 +27,8 @@ class BioproxyEvaluator:
             embeddings_entity,
         )
         self.global_embedding_manager.load(embeddings_name, embeddings_path)
-        self.screens_data_folders = {
-            "ChEMBL": Path("../../../bioproxy/screens_data_chembl"),
-            "Curie": Path("../../../bioproxy/screens_data_curie"),
-        }
-        if screens_folders is not None:
-            self.screens_data_folders.update(screens_folders)
+        self.screens_data_folders = {}
+        self.screens_data_folders.update(screens_folders)
         self.screen_embedding_managers = {}
         self._load_screens_data()
 
