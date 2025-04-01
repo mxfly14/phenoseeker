@@ -90,6 +90,8 @@ class EmbeddingManager:
 
         if self.entity == "well":
             self.find_dmso_controls()
+
+        if self.entity == "well" or self.entity == "image":
             if "Metadata_Row" not in self.df.columns:
                 self.df[["Metadata_Row", "Metadata_Col"]] = self.df[
                     "Metadata_Well"
@@ -148,6 +150,13 @@ class EmbeddingManager:
         # Définir la clé d'unicité selon l'entité
         if self.entity == "well":
             key_columns = ["Metadata_Well", "Metadata_Plate", "Metadata_Source"]
+        elif self.entity == "image":
+            key_columns = [
+                "Metadata_Well",
+                "Metadata_Plate",
+                "Metadata_Source",
+                "Metadata_Site",
+            ]  # noqa
         elif self.entity == "compound":
             key_columns = ["Metadata_JCP2022"]
         else:
@@ -665,6 +674,7 @@ class EmbeddingManager:
         n_neighbors_list: list[int] | None = [10, 15, 20, 30, 40, 50, 75, 100, 150],
         graph_title: str | None = "LISI scores for various aggregation pipelines",
         n_jobs: int = -1,
+        random_lisi: bool = False,
         plot: bool = False,
     ) -> pd.DataFrame:
         """
@@ -694,17 +704,18 @@ class EmbeddingManager:
                 raise ValueError(f"Embedding '{embedding_name}' not found.")
 
             embeddings = self.embeddings[embedding_name]
-            lisi_scores[f"Ideal mixing ({embedding_name})"] = []
+            if random_lisi:
+                lisi_scores[f"Ideal mixing ({embedding_name})"] = []
 
-            random_labels = np.random.permutation(labels)
-            for n_neighbors in tqdm(
-                n_neighbors_list,
-                desc=f"Calculating ideal mixing LISI scores for {embedding_name}",
-            ):
-                score = calculate_lisi_score(
-                    embeddings, random_labels, n_neighbors, n_jobs
-                )
-                lisi_scores[f"Ideal mixing ({embedding_name})"].append(score)
+                random_labels = np.random.permutation(labels)
+                for n_neighbors in tqdm(
+                    n_neighbors_list,
+                    desc=f"Calculating ideal mixing LISI scores for {embedding_name}",
+                ):
+                    score = calculate_lisi_score(
+                        embeddings, random_labels, n_neighbors, n_jobs
+                    )
+                    lisi_scores[f"Ideal mixing ({embedding_name})"].append(score)
 
             lisi_scores[embedding_name] = []
             for n_neighbors in tqdm(
@@ -1138,36 +1149,30 @@ class EmbeddingManager:
     def grouped_embeddings(
         self,
         group_by: str,
-        embeddings_name: str = "Embeddings_mean",
-        new_embeddings_name: str = "Embeddings_mean",
+        embeddings_to_aggregate: list[str] | None = None,
         cols_to_keep: list[str] | None = None,
         aggregation: str = "mean",
         n_jobs: int = -1,
     ) -> "EmbeddingManager":
         """
-        Create a new instance of the class with a grouped DataFrame and embeddings.
+        Create a new instance of the class with grouped DataFrame and aggregated
+        embeddings.
 
         Args:
-            group_by (str): The entity to group by ('well' or 'compound')
-            embeddings_name (str): Name of the embeddings to group.
-            new_embeddings_name (str): Name for the new aggregated embeddings.
-            cols_to_keep (list[str], optional): List of columns to keep in the resulting
-                DataFrame. Defaults to None.
+            group_by (str): The entity to group by ('well' or 'compound').
+            embeddings_to_aggregate (list[str] | None): Names of embeddings
+                to aggregate. If None, all embeddings are aggregated.
+            cols_to_keep (list[str], optional): Columns to keep in the resulting
+                DataFrame.
             aggregation (str, optional): Aggregation method ('mean' or 'median').
                 Defaults to 'mean'.
-            n_jobs (int, optional): Number of parallel jobs to use (-1 for all available
-                cores). Defaults to -1.
+            n_jobs (int, optional): Number of parallel jobs to use. Defaults to -1.
 
         Returns:
-            EmbeddingManager: A new instance of the class with grouped DataFrame and
+            EmbeddingManager: A new instance with grouped DataFrame and aggregated
                 embeddings.
         """
-        if embeddings_name not in self.embeddings:
-            raise ValueError(
-                f"Embedding '{embeddings_name}' not found in self.embeddings."
-            )
-
-        if group_by == "well":
+        if group_by in ["image", "well"]:
             group_by_columns = [
                 "Metadata_Source",
                 "Metadata_Plate",
@@ -1192,37 +1197,46 @@ class EmbeddingManager:
                 cols_to_keep = ["Metadata_InChI", "Metadata_Is_dmso"]
         else:
             raise ValueError(
-                f"Group by '{group_by}' is not implemented. It should be 'well' or 'compound'."  # noqa
+                f"Group by '{group_by}' is not implemented. Use 'well' or 'compound'."
             )
-
-        embeddings = self.embeddings[embeddings_name]
-
-        def aggregate_group(
-            group_indices,
-        ):  # TODO being able to aggregate several embeddings
-            group_vectors = embeddings[group_indices]
-            if aggregation == "mean":
-                return group_vectors.mean(axis=0)
-            elif aggregation == "median":
-                return np.median(group_vectors, axis=0)
-            else:
-                raise ValueError("Invalid aggregation method. Use 'mean' or 'median'.")
 
         grouped = self.df.groupby(group_by_columns)
         grouped_indices = grouped.indices
-
-        aggregated_embeddings = np.array(
-            Parallel(n_jobs=n_jobs)(
-                delayed(aggregate_group)(grouped_indices[group])
-                for group in tqdm(grouped.groups)
-            )
-        )
-
         grouped_df = grouped[cols_to_keep].first().reset_index()
 
-        # Create new instance with grouped data and embeddings
+        def aggregate_group(
+            embedding_array: np.ndarray, indices: list[int]
+        ) -> np.ndarray:
+            vectors = embedding_array[indices]
+            if aggregation == "mean":
+                return vectors.mean(axis=0)
+            elif aggregation == "median":
+                return np.median(vectors, axis=0)
+            else:
+                raise ValueError("Invalid aggregation method. Use 'mean' or 'median'.")
+
+        # Determine embeddings to aggregate
+        embeddings_keys = (
+            embeddings_to_aggregate
+            if embeddings_to_aggregate
+            else list(self.embeddings)
+        )
+
         new_instance = EmbeddingManager(df=grouped_df, entity=group_by)
-        new_instance.embeddings = {new_embeddings_name: aggregated_embeddings}
+        new_instance.embeddings = {}
+
+        for key in embeddings_keys:
+            if key not in self.embeddings:
+                raise ValueError(f"Embedding '{key}' not found in self.embeddings.")
+
+            emb_array = self.embeddings[key]
+            aggregated = np.array(
+                Parallel(n_jobs=n_jobs)(
+                    delayed(aggregate_group)(emb_array, grouped_indices[group])
+                    for group in tqdm(grouped.groups, desc=f"Aggregating {key}")
+                )
+            )
+            new_instance.embeddings[key] = aggregated
 
         return new_instance
 
