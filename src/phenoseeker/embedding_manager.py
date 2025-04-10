@@ -121,7 +121,7 @@ class EmbeddingManager:
     def load(
         self,
         embedding_name: str,
-        embeddings_file: str | Path,
+        embeddings_file: str | Path | np.ndarray,
         metadata_file: str | Path | None = None,
         dtype: type | None = np.float64,
     ) -> None:
@@ -130,7 +130,8 @@ class EmbeddingManager:
 
         Args:
             embedding_name (str): Key for the loaded embeddings.
-            embeddings_file (str | Path): Path to the .npy embeddings file.
+            embeddings_file (str | Path | np.ndarray): Path to the .npy embeddings file
+                or a numpy array.
             metadata_file (str | Path): Path to the metadata parquet file.
             dtype (type, optional): Data type for the embeddings. Defaults to np.float64
         """
@@ -142,10 +143,14 @@ class EmbeddingManager:
         else:
             loaded_metadata = self.df
 
-        embeddings_file = Path(embeddings_file)
-        if not embeddings_file.exists() or embeddings_file.suffix != ".npy":
-            raise ValueError("Provided embeddings path is not a valid .npy file.")
-        embeddings = np.load(embeddings_file)
+        # Charger les embeddings
+        if isinstance(embeddings_file, np.ndarray):
+            embeddings = embeddings_file
+        else:
+            embeddings_file = Path(embeddings_file)
+            if not embeddings_file.exists() or embeddings_file.suffix != ".npy":
+                raise ValueError("Provided embeddings path is not a valid .npy file.")
+            embeddings = np.load(embeddings_file)
 
         # Définir la clé d'unicité selon l'entité
         if self.entity == "well":
@@ -156,7 +161,7 @@ class EmbeddingManager:
                 "Metadata_Plate",
                 "Metadata_Source",
                 "Metadata_Site",
-            ]  # noqa
+            ]
         elif self.entity == "compound":
             key_columns = ["Metadata_JCP2022"]
         else:
@@ -670,7 +675,7 @@ class EmbeddingManager:
     def compute_lisi(
         self,
         labels_column: str,
-        embeddings_names: list[str],
+        embeddings_names: list[str] | str,
         n_neighbors_list: list[int] | None = [10, 15, 20, 30, 40, 50, 75, 100, 150],
         graph_title: str | None = "LISI scores for various aggregation pipelines",
         n_jobs: int = -1,
@@ -699,6 +704,9 @@ class EmbeddingManager:
         labels = self.df[labels_column].values
         lisi_scores = {}
 
+        if isinstance(embeddings_names, str):
+            embeddings_names = [embeddings_names]
+            
         for embedding_name in embeddings_names:
             if embedding_name not in self.embeddings:
                 raise ValueError(f"Embedding '{embedding_name}' not found.")
