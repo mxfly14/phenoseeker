@@ -124,6 +124,7 @@ class EmbeddingManager:
         embeddings_file: str | Path | np.ndarray,
         metadata_file: str | Path | None = None,
         dtype: type | None = np.float64,
+        key_columns: list[str] | None = None,
     ) -> None:
         """
         Load embeddings and associated metadata, align and store them in self.embeddings
@@ -132,73 +133,80 @@ class EmbeddingManager:
             embedding_name (str): Key for the loaded embeddings.
             embeddings_file (str | Path | np.ndarray): Path to the .npy embeddings file
                 or a numpy array.
-            metadata_file (str | Path): Path to the metadata parquet file.
-            dtype (type, optional): Data type for the embeddings. Defaults to np.float64
+            metadata_file (str | Path | None): Path to the metadata parquet file.
+                If None, uses self.df.
+            dtype (type, optional): Data type for the embeddings. Defaults to
+                np.float64.
+            key_columns (List[str], optional): Columns to use as the unique key for
+                alignment. If None, selected based on self.entity.
         """
+        # Load metadata
         if metadata_file is not None:
-            metadata_file = Path(metadata_file)
-            if metadata_file.suffix != ".parquet":
+            metadata_path = Path(metadata_file)
+            if metadata_path.suffix != ".parquet":
                 raise ValueError("Provided metadata path is not a valid parquet file.")
-            loaded_metadata = pd.read_parquet(metadata_file)
+            loaded_metadata = pd.read_parquet(metadata_path)
         else:
-            loaded_metadata = self.df
+            loaded_metadata = self.df.copy()
 
-        # Charger les embeddings
+        # Load embeddings
         if isinstance(embeddings_file, np.ndarray):
             embeddings = embeddings_file
         else:
-            embeddings_file = Path(embeddings_file)
-            if not embeddings_file.exists() or embeddings_file.suffix != ".npy":
+            emb_path = Path(embeddings_file)
+            if not emb_path.exists() or emb_path.suffix != ".npy":
                 raise ValueError("Provided embeddings path is not a valid .npy file.")
-            embeddings = np.load(embeddings_file)
+            embeddings = np.load(emb_path)
 
-        # Définir la clé d'unicité selon l'entité
-        if self.entity == "well":
-            key_columns = ["Metadata_Well", "Metadata_Plate", "Metadata_Source"]
-        elif self.entity == "image":
-            key_columns = [
-                "Metadata_Well",
-                "Metadata_Plate",
-                "Metadata_Source",
-                "Metadata_Site",
-            ]
-        elif self.entity == "compound":
-            key_columns = ["Metadata_JCP2022"]
-        else:
-            raise ValueError(f"Unknown entity type: {self.entity}")
-
-        # Comparer et aligner les métadonnées
-        merged_metadata = self.df.merge(
-            loaded_metadata, on=key_columns, how="inner", suffixes=("", "_loaded")
-        )
-
-        if len(merged_metadata) != len(self.df):
-            warnings.warn(
-                f"Metadata mismatch: using only {len(merged_metadata)} rows present in both metadata files."  # noqa
-            )
-            self.df = merged_metadata.drop(
-                columns=[
-                    col for col in merged_metadata.columns if col.endswith("_loaded")
+        # Determine key columns
+        if key_columns is None:
+            if self.entity == "well":
+                key_columns = ["Metadata_Well", "Metadata_Plate", "Metadata_Source"]
+            elif self.entity == "image":
+                key_columns = [
+                    "Metadata_Well",
+                    "Metadata_Plate",
+                    "Metadata_Source",
+                    "Metadata_Site",
                 ]
-            )
+            elif self.entity == "compound":
+                key_columns = ["Metadata_JCP2022"]
+            else:
+                raise ValueError(f"Unknown entity type: {self.entity}")
 
-        # Réordonner les embeddings selon la même clé que self.df
-        loaded_metadata["order_key"] = loaded_metadata[key_columns].apply(tuple, axis=1)
-        self.df["order_key"] = self.df[key_columns].apply(tuple, axis=1)
-
-        reorder_index = (
-            self.df["order_key"]
-            .map({k: i for i, k in enumerate(loaded_metadata["order_key"])})
-            .values
+        # Merge and align metadata
+        merged = self.df.merge(
+            loaded_metadata,
+            on=key_columns,
+            how="inner",
+            suffixes=("", "_loaded"),
         )
 
-        # Réordonner les embeddings
-        reordered_embeddings = embeddings[reorder_index.astype(int)]
+        if len(merged) != len(self.df):
+            warnings.warn(
+                f"Metadata mismatch: using only {len(merged)} rows present in both sources."  # NOQA
+            )
+            # Keep only non-loaded duplicate columns
+            drop_cols = [col for col in merged.columns if col.endswith("_loaded")]
+            self.df = merged.drop(columns=drop_cols)
+        # Create ordering keys
+        loaded_metadata = loaded_metadata.copy()
+        loaded_metadata["_order_key"] = loaded_metadata[key_columns].apply(
+            tuple, axis=1
+        )
+        self.df["_order_key"] = self.df[key_columns].apply(tuple, axis=1)
 
-        self.embeddings[embedding_name] = reordered_embeddings.astype(dtype)
+        # Map order
+        order_map = {k: i for i, k in enumerate(loaded_metadata["_order_key"])}
+        indices = self.df["_order_key"].map(order_map).astype(int).values
 
-        # Nettoyer la colonne temporaire
-        self.df.drop(columns=["order_key"], inplace=True)
+        # Reorder embeddings and store
+        reordered = embeddings[indices]
+        self.embeddings[embedding_name] = reordered.astype(dtype)
+
+        # Clean up temporary columns
+        self.df.drop(columns=["_order_key"], inplace=True)
+        loaded_metadata.drop(columns=["_order_key"], inplace=True)
 
     def get_embeddings(self, embedding_name: str) -> np.ndarray:
         """
@@ -706,7 +714,7 @@ class EmbeddingManager:
 
         if isinstance(embeddings_names, str):
             embeddings_names = [embeddings_names]
-            
+
         for embedding_name in embeddings_names:
             if embedding_name not in self.embeddings:
                 raise ValueError(f"Embedding '{embedding_name}' not found.")
@@ -859,8 +867,8 @@ class EmbeddingManager:
             n_jobs (int, optional): Number of parallel jobs. Defaults to -1.
             dtype (type, optional): Data type for the embeddings.
                 Defaults to np.float32.
-            similarity (bool, optional): If True, compute similarity instead of
-                distance. Defaults to False.
+            similarity (bool, optional): If True, for cosine compute similarity instead
+                of distance. Defaults to False.
         """
         valid_distances = [
             "euclidean",
@@ -1203,6 +1211,14 @@ class EmbeddingManager:
             group_by_columns = ["Metadata_InChI_ID"]
             if cols_to_keep is None:
                 cols_to_keep = ["Metadata_InChI", "Metadata_Is_dmso"]
+        elif group_by == "gene":
+            group_by_columns = ["Metadata_JCP2022"]
+            if cols_to_keep is None:
+                cols_to_keep = [
+                    "Metadata_Symbol_x",
+                    "Metadata_Symbol_y",
+                    "Metadata_InChIKey",
+                ]
         else:
             raise ValueError(
                 f"Group by '{group_by}' is not implemented. Use 'well' or 'compound'."
@@ -1440,6 +1456,7 @@ class EmbeddingManager:
         method: str | None = "ZCA",
         norm_embeddings: bool = True,
         use_control: bool = True,
+        subsets_cols: list[str] | None = "Metadata_Plate",
         n_jobs: int = -1,
     ) -> None:
         """

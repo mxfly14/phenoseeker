@@ -68,6 +68,14 @@ class BioproxyEvaluator:
         screen_embedding_manager.df = screen_embedding_manager.df.merge(
             df, on="Metadata_JCP2022", how="inner"
         )
+        if "Metadata_InChI_x" in screen_embedding_manager.df:
+            screen_embedding_manager.df["Metadata_InChI"] = screen_embedding_manager.df[
+                "Metadata_InChI_x"
+            ]
+            screen_embedding_manager.df.drop(
+                columns=["Metadata_InChI_x", "Metadata_InChI_y"],
+                inplace=True,
+            )
         self.screen_embedding_managers[assays_source][
             filename
         ] = screen_embedding_manager
